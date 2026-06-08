@@ -1,20 +1,28 @@
 """FastAPI app entrypoint.
 
 Phase 1.3: ``/healthz`` returns the real ``corpus_count`` from
-``company_embeddings`` once ingest has run. The schema is in place
-(Phase 1.3) and the search / analyze routes land in Phase 1.4 / 1.8.
+``company_embeddings`` once ingest has run.
+Phase 1.4: ``POST /search`` — ANN retrieval against the corpus.
+The /ideas/analyze route lands in Phase 1.8.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from src.api.search import (
+    CorpusNotIndexedError,
+    EmbedderDep,
+    SearchRequest,
+    SearchResponse,
+    search_endpoint,
+)
 from src.config import DATABASE_URL, EMBEDDING_MODEL
 from src.data.models import CompanyEmbedding
 
@@ -109,3 +117,44 @@ def healthz(engine: EngineDep) -> HealthStatus:
         model=EMBEDDING_MODEL,
         corpus_count=corpus_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Search route (Phase 1.4)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/search",
+    response_model=SearchResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Ranked list of similar companies (may be empty)."},
+        422: {"description": "Validation error (empty / oversized query)."},
+        503: {"description": "Corpus not reachable."},
+    },
+)
+def search(
+    request: SearchRequest,
+    engine: EngineDep,
+    embedder: EmbedderDep,
+) -> SearchResponse:
+    """Ranked ANN search against the embedded YC corpus.
+
+    Returns the top-``top_k`` companies (deduplicated, so one row per
+    company even if the description was chunked) ordered by cosine
+    similarity to the query embedding. Each hit carries both the raw
+    cosine similarity and a normalised 0–1 confidence for downstream
+    thresholding.
+
+    Empty corpus: returns 200 with an empty list. The eval harness
+    treats this as "nothing to dedup against"; the API treats it as
+    "ingest hasn't run, but the system is up".
+    """
+    try:
+        return search_endpoint(request, engine=engine, embedder=embedder)
+    except CorpusNotIndexedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="corpus not reachable",
+        )
