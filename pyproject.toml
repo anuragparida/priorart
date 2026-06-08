@@ -40,7 +40,7 @@ dev = [
 
 [project.scripts]
 # CLI entrypoints (filled out in later phases; placeholders here)
-# priorart-scrape = "src.data.scrape_yc:main"
+priorart-scrape = "src.data.scrape_yc:app"
 # priorart-ingest = "src.data.ingest:main"
 # priorart-eval = "src.eval.run:main"
 
