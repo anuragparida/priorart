@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# uv
+.uv/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy / ruff
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project: data + results (snapshots/eval results are committed; pgdata is not)
+# Only the bulk data dir roots are in .gitignore — subdirs like data/snapshots/,
+# data/eval/, evals/, results/ are tracked. Add new .gitkeep-style files if you
+# create new tracked subdirs.
+pgdata/
+docker-data/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ML model caches (downloaded at runtime; not committed)
+models-cache/
+.cache/
+*.bin
+*.gguf

@@ -1,0 +1,58 @@
+name: priorart
+
+# Phase 1.1 skeleton. Only postgres + api are live. The other services
+# (temporal, dagster, langfuse, mlflow, frontend) are scoped for Phase 2/3
+# per docs/PHASE-1.md — do not add them here.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: priorart-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-priorart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-priorart}
+      POSTGRES_DB: ${POSTGRES_DB:-priorart}
+    # 15432 is taken by clausecraft-postgres on this host; use 15433 here.
+    # 18000 is the API port per docs/PHASE-1.md §1.1 (the API runs on the
+    # host via `uv run uvicorn` so it doesn't conflict with the
+    # dockerized api service which is gated on the `app` profile).
+    ports:
+      - "${POSTGRES_PORT:-15433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-priorart} -d ${POSTGRES_DB:-priorart}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    # Placeholder for the FastAPI service. Built in Phase 1.1 — runs a
+    # bare-bones /healthz until routes land in 1.4+ (ANN search) and 1.8
+    # (/ideas/analyze).
+    image: python:3.12-slim
+    container_name: priorart-api
+    profiles: ["app"]  # don't auto-start with `docker compose up -d`; CI / manual start
+    working_dir: /app
+    volumes:
+      - .:/app
+      - data:/app/data
+    ports:
+      - "${API_PORT:-18000}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-priorart}:${POSTGRES_PASSWORD:-priorart}@postgres:5432/${POSTGRES_DB:-priorart}
+      API_PORT: 8000
+    command:
+      - sh
+      - -c
+      - "pip install -q uv && uv sync --frozen && uv run uvicorn src.api.app:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  data:
