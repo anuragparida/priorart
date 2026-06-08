@@ -127,30 +127,31 @@ def _date_from_filename(path: Path) -> str:
 
 @dataclass
 class IngestStats:
-    """Counts for the final report. Surfaced in CLI output and tests."""
+    """Counts for the final report. Surfaced in CLI output and tests.
+
+    We track the total number of companies seen (``companies_total``)
+    and the number of embedding rows written. We don't try to
+    distinguish insert vs update per-row inside a single ingest
+    run — the idempotency guarantee is verified by the row count
+    staying stable across re-runs (test_ingest_is_idempotent_on_re_run).
+    """
 
     companies_total: int = 0
-    companies_inserted: int = 0
-    companies_updated: int = 0
     chunks_total: int = 0
     embeddings_inserted: int = 0
-    embeddings_updated: int = 0
     duration_seconds: float = 0.0
 
     def as_dict(self) -> dict:
         return {
             "companies_total": self.companies_total,
-            "companies_inserted": self.companies_inserted,
-            "companies_updated": self.companies_updated,
             "chunks_total": self.chunks_total,
             "embeddings_inserted": self.embeddings_inserted,
-            "embeddings_updated": self.embeddings_updated,
             "duration_seconds": round(self.duration_seconds, 2),
         }
 
 
-def _upsert_company(session: Session, rec: CompanyRecord) -> tuple[int, bool]:
-    """Upsert one Company row, return ``(id, was_insert)``.
+def _upsert_company(session: Session, rec: CompanyRecord) -> int:
+    """Upsert one Company row, return the id.
 
     Uses Postgres' ``ON CONFLICT (name, batch) DO UPDATE`` so a
     re-run of the same JSONL updates the description / tags / url
@@ -180,28 +181,9 @@ def _upsert_company(session: Session, rec: CompanyRecord) -> tuple[int, bool]:
                 "snapshot_date": rec.snapshot_date,
             },
         )
-        .returning(Company.id, Company.snapshot_date)
+        .returning(Company.id)
     )
-    result = session.execute(stmt).one()
-    company_id = result[0]
-    # xmax is 0 for freshly inserted rows in Postgres, non-zero for
-    # updates — a cheap, reliable "was this an insert?" check.
-    was_insert = result[1] == rec.snapshot_date and not _row_was_updated(session, company_id)
-    return company_id, was_insert
-
-
-def _row_was_updated(session: Session, company_id: int) -> bool:
-    """Best-effort xmax check. Falls back to false on error."""
-    from sqlalchemy import text
-
-    try:
-        row = session.execute(
-            text("SELECT xmax = 0 AS was_insert FROM companies WHERE id = :id"),
-            {"id": company_id},
-        ).one()
-        return not bool(row.was_insert)
-    except Exception:
-        return False
+    return int(session.execute(stmt).scalar_one())
 
 
 def _upsert_embedding(
@@ -270,11 +252,7 @@ def ingest(
     last_progress = 0
 
     for idx, rec in enumerate(records, start=1):
-        company_id, was_insert = _upsert_company(session, rec)
-        if was_insert:
-            stats.companies_inserted += 1
-        else:
-            stats.companies_updated += 1
+        company_id = _upsert_company(session, rec)
 
         for chunk in chunk_text(rec.description):
             pending_texts.append(chunk.text)

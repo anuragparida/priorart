@@ -93,8 +93,6 @@ def test_ingest_creates_companies_and_embeddings(pg_session: Session) -> None:
     pg_session.commit()
 
     assert stats.companies_total == 3
-    assert stats.companies_inserted == 3
-    assert stats.companies_updated == 0
     # Each description is multi-sentence but < 480 chars → 1 chunk
     # per company.
     assert stats.chunks_total == 3
@@ -108,26 +106,40 @@ def test_ingest_creates_companies_and_embeddings(pg_session: Session) -> None:
 
 
 def test_ingest_is_idempotent_on_re_run(pg_session: Session) -> None:
+    """Re-running with the same data should keep the row count stable.
+
+    This is the real idempotency contract: a second run on the same
+    JSONL writes the same number of rows and produces the same
+    company_id + embedding_id values.
+    """
     records = _make_records(2)
     embedder = FakeEmbedder()
 
     first = ingest(pg_session, records, embedder=embedder)
     pg_session.commit()
-    assert first.companies_inserted == 2
+    first_n_companies = pg_session.execute(
+        select(func.count()).select_from(Company)
+    ).scalar_one()
+    first_n_emb = pg_session.execute(
+        select(func.count()).select_from(CompanyEmbedding)
+    ).scalar_one()
+    assert first.companies_total == 2
 
     # Re-run with a fresh embedder (same model_version → idempotent).
     embedder2 = FakeEmbedder()
     second = ingest(pg_session, records, embedder=embedder2)
     pg_session.commit()
-
-    assert second.companies_total == 2
-    assert second.companies_inserted == 0
-    assert second.companies_updated == 2
-    # Embeddings are upserted, so the count stays at 2.
-    n_embeddings = pg_session.execute(
+    second_n_companies = pg_session.execute(
+        select(func.count()).select_from(Company)
+    ).scalar_one()
+    second_n_emb = pg_session.execute(
         select(func.count()).select_from(CompanyEmbedding)
     ).scalar_one()
-    assert n_embeddings == 2
+
+    assert second.companies_total == 2
+    # Row counts must not have grown.
+    assert second_n_companies == first_n_companies == 2
+    assert second_n_emb == first_n_emb == 2
 
 
 def test_ingest_with_multi_chunk_description(pg_session: Session) -> None:
@@ -201,21 +213,25 @@ def test_ingest_batches_embedder_calls(pg_session: Session) -> None:
 
 def test_upsert_company_creates_then_updates(pg_session: Session) -> None:
     rec = _make_records(1)[0]
-    cid, was_insert = _upsert_company(pg_session, rec)
+    cid = _upsert_company(pg_session, rec)
     pg_session.commit()
-    assert was_insert
     first_id = cid
 
     # Same natural key → no new row, fresh id returned
-    cid2, was_insert2 = _upsert_company(pg_session, rec)
+    cid2 = _upsert_company(pg_session, rec)
     pg_session.commit()
     assert cid2 == first_id
-    assert not was_insert2
+
+    # The company table has exactly 1 row (idempotent on natural key)
+    n = pg_session.execute(
+        select(func.count()).select_from(Company)
+    ).scalar_one()
+    assert n == 1
 
 
 def test_upsert_embedding_does_not_duplicate(pg_session: Session) -> None:
     rec = _make_records(1)[0]
-    cid, _ = _upsert_company(pg_session, rec)
+    cid = _upsert_company(pg_session, rec)
     pg_session.commit()
     chunk = chunk_text(rec.description)[0]
     vec = [0.0] * 1024

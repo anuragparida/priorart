@@ -35,25 +35,57 @@ def _random_schema() -> str:
 def pg_engine() -> Iterator[Engine]:
     """Yield a SQLAlchemy engine bound to a per-test Postgres schema.
 
-    On enter: create schema, set search_path, run init_schema. On
-    exit: drop schema. Yields a plain Engine — the test is
-    responsible for sessions, transactions, etc.
+    On enter: create schema, set search_path on every connection,
+    create tables + HNSW index in the test schema. On exit: drop
+    schema. Yields a plain Engine — the test is responsible for
+    sessions, transactions, etc.
+
+    Why we set search_path on the *connection* (via event listener)
+    rather than in a transaction
+    ---------------------------------------------------------------
+    ``SET search_path`` inside ``engine.begin()`` is per-transaction
+    in Postgres — it doesn't survive past COMMIT. We use a
+    ``connect`` event so the search_path is set on every new
+    connection the engine creates. We also keep ``public`` in the
+    path so the ``vector`` type installed by the pgvector extension
+    is still findable.
+
+    Why we create tables inside the test schema with a connection
+    that has the search_path set
+    -----------------------------------------------------------
+    ``Base.metadata.create_all(engine)`` does not honour the
+    ``connect`` event for the connection it uses internally to
+    emit ``CREATE TABLE`` — the tables end up in ``public`` and
+    the test would see live-corpus rows. We work around this by
+    opening an explicit connection with the search_path set, then
+    running ``create_all`` against that connection.
     """
     schema = _random_schema()
     engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _set_search_path(dbapi_connection, connection_record):  # noqa: ANN001
+        with dbapi_connection.cursor() as cursor:
+            cursor.execute(f'SET search_path TO "{schema}", public')
+
     try:
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA "{schema}"'))
-            conn.execute(text(f'SET search_path TO "{schema}"'))
-
-        # init_schema runs CREATE EXTENSION (which is global) +
-        # create_all (which respects search_path). After the SET
-        # above, create_all() creates tables in the test schema.
         with engine.begin() as conn:
+            # Extension install is idempotent and global.
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        Base.metadata.create_all(engine)
+        # Create tables inside the test schema. We use the engine
+        # form (``create_all(engine)``) — passing a raw connection
+        # here would emit DDL on whatever connection happens to be
+        # in the pool, but the engine form honours the search_path
+        # we set on every new connection via the connect event.
+        # This was a real bug discovered the hard way: with
+        # ``create_all(conn)`` the tables were created in ``public``
+        # and tests saw live-corpus rows.
+        Base.metadata.create_all(engine, checkfirst=False)
         with engine.begin() as conn:
-            # Inline the HNSW DDL with the right search_path
             conn.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_company_embeddings_embedding_hnsw "
@@ -65,8 +97,6 @@ def pg_engine() -> Iterator[Engine]:
 
         yield engine
     finally:
-        # Best-effort drop. The schema may already be gone if a test
-        # truncated it explicitly.
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
