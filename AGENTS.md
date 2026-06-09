@@ -200,6 +200,15 @@ git push origin main
 
 This is a public-facing portfolio repo. No `main` force-pushes, no `git reset --hard` to "undo" anything — use `git revert` instead.
 
+### Commit cadence (per workspace `AGENTS.md`)
+
+- **One commit per kanban card, at minimum.** Card ID (`t_xxxxxxxx`) in the
+  subject when there is one. Format: `Phase N (card t_xxx): <what changed>`.
+- **Commit before yielding.** Don't leave a working tree with uncommitted
+  meaningful changes at handoff time.
+- **Default to `main`.** No long-lived feature branches — phase branches are
+  OK in flight, but merge to `main` and push at the end of each phase.
+
 ---
 
 ## What success looks like
