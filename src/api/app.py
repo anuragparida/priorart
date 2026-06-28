@@ -3,7 +3,8 @@
 Phase 1.3: ``/healthz`` returns the real ``corpus_count`` from
 ``company_embeddings`` once ingest has run.
 Phase 1.4: ``POST /search`` — ANN retrieval against the corpus.
-The /ideas/analyze route lands in Phase 1.8.
+Phase 1.8: ``POST /ideas/analyze`` — orchestrates embed → ANN search
+        → LLM compare → ``IdeaVerdict``.
 """
 
 from __future__ import annotations
@@ -12,10 +13,16 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from src.api.analyze import (
+    AnalyzeError,
+    AnalyzeRequest,
+    analyze_endpoint,
+)
+from src.api.db import get_engine
 from src.api.search import (
     CorpusNotIndexedError,
     EmbedderDep,
@@ -23,8 +30,13 @@ from src.api.search import (
     SearchResponse,
     search_endpoint,
 )
-from src.config import DATABASE_URL, EMBEDDING_MODEL
+from src.config import EMBEDDING_MODEL
 from src.data.models import CompanyEmbedding
+from src.llm.compare import (
+    LLMTransportError,
+    MissingAPIKeyError,
+    SchemaViolationError,
+)
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -37,7 +49,7 @@ app = FastAPI(
         "Takes a free-text idea, returns ranked similar YC launches + "
         "structured comparison + market-scope signal."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -46,13 +58,11 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 
-def get_engine() -> Engine:
-    """One engine per process. Cheap to create, fine for Phase 1.
-
-    Phase 2 should swap this for a connection pool sized to the
-    Temporal worker's expected concurrency.
-    """
-    return create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+#: Re-exported so existing tests that monkeypatch ``app.get_engine``
+#: keep working. The real factory lives in ``src.api.db`` so both
+#: ``/search`` and ``/ideas/analyze`` can import it without a
+#: circular dependency through ``app.py``.
+__all__ = ["app", "get_engine"]
 
 
 EngineDep = Annotated[Engine, Depends(get_engine)]
@@ -153,8 +163,103 @@ def search(
     """
     try:
         return search_endpoint(request, engine=engine, embedder=embedder)
-    except CorpusNotIndexedError:
+    except CorpusNotIndexedError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="corpus not reachable",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# /ideas/analyze route (Phase 1.8)
+# ---------------------------------------------------------------------------
+
+
+#: Response model is ``Union[IdeaVerdict, AnalyzeError]``; both are
+#: 200s. FastAPI picks the right ``response_model`` for serialisation
+#: based on the return type. We document the four ``AnalyzeError``
+#: shapes in the route's ``responses`` block so OpenAPI reflects
+#: them.
+@app.post(
+    "/ideas/analyze",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": (
+                "Either a validated IdeaVerdict (success) or a "
+                "structured AnalyzeError. See the AnalyzeError schema "
+                "for the error variants."
+            ),
+        },
+        422: {"description": "Validation error (empty / oversized idea)."},
+        503: {
+            "description": (
+                "Corpus is missing (table unreachable), or "
+                "ANTHROPIC_API_KEY is not configured. The latter is "
+                "a 503 because the endpoint is useless without an "
+                "LLM — clients should retry after configuring."
+            ),
+        },
+    },
+)
+def analyze(
+    request: AnalyzeRequest,
+    engine: EngineDep,
+    embedder: EmbedderDep,
+):
+    """Orchestrate: embed → ANN search → LLM compare → IdeaVerdict.
+
+    The happy path returns a Pydantic-validated ``IdeaVerdict`` with
+    the top-K competitors, market-scope signal, and supporting
+    evidence.
+
+    The error contract (all 200s, not 500s) covers four cases:
+
+    - ``no_competitors`` — corpus is empty / no hits. This is a
+      legitimate "genuinely novel" signal, not a failure.
+    - ``schema_violation`` — the LLM returned something instructor
+      couldn't coerce into ``IdeaVerdict`` after retries. ``details``
+      carries the Pydantic error dict so the client can debug.
+    - ``llm_transport`` — Anthropic SDK raised a non-validation error
+      (timeout, network, 5xx). ``details`` carries the exception
+      class + message.
+    - ``llm_unconfigured`` — ``ANTHROPIC_API_KEY`` is missing. This is
+      also a 503 (see the ``responses`` block) — the endpoint can't
+      function without an LLM, but we still emit a structured
+      AnalyzeError body so the client has something parseable.
+
+    A real 503 (corpus missing table) is the only case where we
+    raise — there's no IdeaVerdict-shaped response to return, just
+    "the corpus is broken, retry later".
+    """
+    try:
+        result = analyze_endpoint(request, engine=engine, embedder=embedder)
+    except CorpusNotIndexedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="corpus not reachable",
+        ) from exc
+    except MissingAPIKeyError as exc:
+        # 503 + structured body. We use HTTPException for the status
+        # code and smuggle the AnalyzeError shape in the ``detail``
+        # field — clients should still get something parseable.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "llm_unconfigured",
+                "details": {"message": str(exc)},
+            },
+        ) from exc
+    except SchemaViolationError as exc:
+        # Spec: "No 500s on schema-violation — surface as
+        # {"error": "schema_violation", "details": ...}" with 200.
+        return AnalyzeError(error="schema_violation", details=exc.details)
+    except LLMTransportError as exc:
+        # Same shape as schema_violation — structured 200 body so
+        # the client can tell "the LLM is sick" from "the LLM
+        # returned garbage". The cause is in details.
+        return AnalyzeError(
+            error="llm_transport",
+            details={"message": str(exc), "type": type(exc).__name__},
         )
+    return result

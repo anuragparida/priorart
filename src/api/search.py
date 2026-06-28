@@ -47,7 +47,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.data.db import get_engine
+from src.api.db import get_engine
 from src.data.embedder import Embedder
 
 logger = logging.getLogger(__name__)
