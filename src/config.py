@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 
 # Repo root: src/../  =  <repo>
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# ``src/config.py`` -> ``src/`` -> ``priorart/`` (repo root) -> ``workspace/`` (parent).
+# So ``parents[1]`` is the repo root, not ``parents[2]``.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Data paths
 DATA_DIR = REPO_ROOT / "data"

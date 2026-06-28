@@ -53,3 +53,8 @@ models-cache/
 .cache/
 *.bin
 *.gguf
+
+# Frontend (Phase 1.9, out of scope for Phase 1.6 eval harness work)
+node_modules/
+src/frontend/node_modules/
+src/frontend/dist/

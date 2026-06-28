@@ -1,0 +1,22 @@
+# Dense retrieval config — `bge-m3` embeddings, no reranker.
+#
+# Phase 1.6 default config (docs/PHASE-1.md §1.6). Offline by design —
+# no Cohere rerank, no external API calls. Everything happens inside
+# the FastAPI process: query -> bge-m3 embed -> pgvector ANN -> dedup.
+#
+# This file is read by `python -m eval.run` via `src.eval.config.load`.
+# The schema is intentionally tiny — the eval runner only cares about:
+#   - name:    a label written into the leaderboard CSV
+#   - api_url: where to POST /search (default = the live API on 18001)
+#   - top_k:   how many hits to fetch per query (we over-fetch in the
+#              runner, but the API itself is bounded by this)
+#
+# Phase 2 will add bm25 / hybrid_rrf / rerank variants as siblings
+# of this file. For Phase 1 the dense config is the only one we ship.
+
+name: dense_bge_m3
+embedding_model: BAAI/bge-m3
+embedding_dim: 1024
+top_k: 20
+api_url: http://localhost:18001/search
+notes: Baseline Phase 1 config. Dense bge-m3 only, no reranker.
