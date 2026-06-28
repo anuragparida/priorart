@@ -64,6 +64,10 @@ eval: ## Run the eval harness against the live priorart API. Writes results/lead
 		--db results/eval.duckdb \
 		--markdown-out results/leaderboard.md
 
+.PHONY: screenshot
+screenshot: ## Re-render docs/assets/leaderboard-v1.png from results/leaderboard.csv.
+	$(PY) scripts/render_leaderboard_screenshot.py
+
 .PHONY: test
 test: ## Run the pytest suite.
 	$(PY) -m pytest
