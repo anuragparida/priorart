@@ -16,6 +16,8 @@
 #   - scrape: refresh the YC snapshot (Phase 1.2)
 #   - ingest: load the snapshot into Postgres (Phase 1.3)
 #   - eval:   run the eval harness against the live API (Phase 1.6)
+#   - smoke:  end-to-end smoke test against /healthz + /search + /ideas/analyze (Phase 1.11)
+#   - dev:    run uvicorn + pnpm dev in parallel (Phase 1.11 — single command for the whole stack)
 #   - test:   run the pytest suite
 #   - clean:  remove build / cache artifacts
 #
@@ -67,6 +69,21 @@ eval: ## Run the eval harness against the live priorart API. Writes results/lead
 .PHONY: screenshot
 screenshot: ## Re-render docs/assets/leaderboard-v1.png from results/leaderboard.csv.
 	$(PY) scripts/render_leaderboard_screenshot.py
+
+.PHONY: smoke
+smoke: ## End-to-end smoke test: hits /healthz + /search + /ideas/analyze. Exits 0 on success.
+	$(PY) scripts/smoke.py --api-url http://localhost:$(PORT)
+
+.PHONY: dev
+dev: ## Run uvicorn (API on $(PORT)) + pnpm dev (frontend on 15174) in parallel.
+	@echo "Starting uvicorn on :$(PORT) and pnpm dev on :15174 in parallel."
+	@echo "API logs    → /tmp/priorart-api.log"
+	@echo "Frontend    → /tmp/priorart-frontend.log"
+	@echo "Stop with Ctrl-C. (Both processes will receive the signal.)"
+	@trap 'kill 0' EXIT INT TERM; \
+	  (cd $(CURDIR) && .venv/bin/uvicorn src.api.app:app --host 0.0.0.0 --port $(PORT) > /tmp/priorart-api.log 2>&1 &) ; \
+	  (cd $(CURDIR)/src/frontend && pnpm dev > /tmp/priorart-frontend.log 2>&1 &) ; \
+	  wait
 
 .PHONY: test
 test: ## Run the pytest suite.
