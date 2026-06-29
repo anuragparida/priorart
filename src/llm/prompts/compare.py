@@ -210,3 +210,20 @@ the answer — use the descriptions to judge the actual overlap.
 A single JSON object matching the schema provided. No prose, no \
 markdown, no commentary. JSON only.
 """
+
+# ---------------------------------------------------------------------------
+# Prompt template version (Phase 2.4 — MLflow tracker integration)
+# ---------------------------------------------------------------------------
+#
+# This string is logged as an MLflow ``params`` entry on every eval-harness
+# run (and on every /ideas/analyze call that traces to Langfuse). It is the
+# canonical way to attribute a leaderboard row to a specific prompt template
+# — change this string when SYSTEM_PROMPT or _USER_PROMPT_TEMPLATE change,
+# not on a calendar-driven cadence. Bump the version suffix (v1, v2, ...)
+# and add a comment summarising the diff above.
+#
+# The full prompt text (SYSTEM_PROMPT + _USER_PROMPT_TEMPLATE) is logged
+# as an MLflow artifact via ``mlflow.log_text`` per the PHASE-2.md pitfall
+# rule "do not log prompts as params" — params are for hyperparameters,
+# artifacts are for content.
+PROMPT_TEMPLATE_VERSION: str = "compare-v1"

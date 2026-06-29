@@ -5,10 +5,18 @@ Phase 1.3: ``/healthz`` returns the real ``corpus_count`` from
 Phase 1.4: ``POST /search`` — ANN retrieval against the corpus.
 Phase 1.8: ``POST /ideas/analyze`` — orchestrates embed → ANN search
         → LLM compare → ``IdeaVerdict``.
+Phase 2.3: ``/healthz`` returns ``langfuse_enabled`` (boolean) so
+        operators can confirm Langfuse tracing is wired without
+        opening the Langfuse UI. ``init_langfuse`` runs in the
+        startup hook so the first /ideas/analyze request already
+        has a client.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -37,10 +45,31 @@ from src.llm.compare import (
     MissingAPIKeyError,
     SchemaViolationError,
 )
+from src.observability.langfuse import init_langfuse, is_tracing_enabled
 
 # ---------------------------------------------------------------------------
-# App factory
+# App factory + lifespan (Phase 2.3 Langfuse init)
 # ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Process-wide startup / shutdown hooks (Phase 2.3).
+
+    Replaces ``@app.on_event("startup")`` (deprecated in
+    FastAPI 0.115). We use the modern ``lifespan`` context
+    manager — on entry we init Langfuse; on exit we have
+    nothing to flush because the Langfuse SDK uses a
+    background-thread flush model and the process is
+    shutting down anyway.
+    """
+    init_langfuse()
+    logging.getLogger(__name__).info(
+        "langfuse tracing=%s",
+        "enabled" if is_tracing_enabled() else "noop (no keys configured)",
+    )
+    yield
+
 
 app = FastAPI(
     title="PriorArt",
@@ -50,6 +79,7 @@ app = FastAPI(
         "structured comparison + market-scope signal."
     ),
     version="0.3.0",
+    lifespan=_lifespan,
 )
 
 
@@ -78,6 +108,11 @@ class HealthStatus(BaseModel):
     db: str
     model: str
     corpus_count: int | None  # None only when the table is missing or unreadable
+    # Phase 2.3 — Langfuse tracing status. ``True`` when real keys are
+    # configured + the SDK authenticates against the self-hosted server;
+    # ``False`` when keys are missing/placeholder or the SDK failed to
+    # init. The route layer reads this via ``is_tracing_enabled()``.
+    langfuse_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +161,7 @@ def healthz(engine: EngineDep) -> HealthStatus:
         db=db_status,
         model=EMBEDDING_MODEL,
         corpus_count=corpus_count,
+        langfuse_enabled=is_tracing_enabled(),
     )
 
 

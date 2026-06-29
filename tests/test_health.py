@@ -18,9 +18,21 @@ from src.data.ingest import CompanyRecord, ingest
 
 
 def test_health_status_schema_fields_present() -> None:
-    """HealthStatus must carry status, db, model, corpus_count."""
+    """HealthStatus must carry status, db, model, corpus_count, langfuse_enabled.
+
+    Phase 2.3 added ``langfuse_enabled`` so operators can confirm
+    tracing is wired without opening the Langfuse UI. The field
+    is additive — old clients that only read the other four
+    fields keep working.
+    """
     fields = set(HealthStatus.model_fields.keys())
-    assert fields == {"status", "db", "model", "corpus_count"}
+    assert fields == {
+        "status",
+        "db",
+        "model",
+        "corpus_count",
+        "langfuse_enabled",
+    }
 
 
 def test_health_status_accepts_optional_corpus_count() -> None:

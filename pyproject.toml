@@ -24,6 +24,11 @@ dependencies = [
     # LLM
     "instructor>=1.3",
     "anthropic>=0.39",
+    # Observability — Langfuse wraps every LLM call (Phase 2.3).
+    # Pinned to the 2.x line (we run the v2 SDK on this host; the
+    # Langfuse container is ``langfuse/langfuse:2`` per AGENTS.md,
+    # not v3 which hard-requires ClickHouse + Redis + MinIO).
+    "langfuse>=2.50,<3",
     # Eval / data
     "duckdb>=1.0",
     # Testing
