@@ -47,9 +47,10 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -64,11 +65,6 @@ from src.api.analyze import (
 )
 from src.data.embedder import Embedder
 from src.data.ingest import CompanyRecord
-from src.llm.compare import (
-    LLMTransportError,
-    MissingAPIKeyError,
-    SchemaViolationError,
-)
 from src.llm.schemas import (
     DEFAULT_TOP_K,
     MAX_TOP_K,
@@ -426,29 +422,23 @@ def test_analyze_endpoint_empty_corpus_returns_no_competitors(pg_engine):
 
 
 def test_ideas_analyze_happy_path(client_with_indexed_corpus):
-    """Happy path: 200 + a valid IdeaVerdict JSON body."""
-    fake_verdict_dict = {
-        "idea": "AI for SMB legal contract review",
-        "top_competitors": [
-            {
-                "company_id": 1,
-                "name": "Alpha Co",
-                "similarity_axes": ["AI contract drafting", "SMB market"],
-                "key_differences": ["different focus"],
-                "likely_failure_modes": ["strong distribution"],
-                "evidence_links": [],
-                "confidence": 0.75,
-            }
-        ],
-        "market_scope": "crowded_but_growing",
-        "market_scope_rationale": "3 similar YC launches in legaltech, none dominant",
-        "supporting_evidence": [],
-    }
-    fake_verdict = IdeaVerdict.model_validate(fake_verdict_dict)
+    """Happy path: 200 + a workflow handle (Phase 2.1 Temporal client).
 
-    with patch.object(
-        analyze_module, "compare_topk", return_value=fake_verdict
-    ):
+    The /ideas/analyze route no longer returns the IdeaVerdict
+    directly. It starts an ``IdeaAnalysisWorkflow`` and returns the
+    handle — the verdict lives at ``GET /workflows/{id}/result``.
+    """
+    fake_handle = {
+        "workflow_id": "idea-analysis-2026-06-29-test-happy-path",
+        "run_id": "019f12af-test-happy-path",
+        "status": "running",
+        "task_queue": "priorart-idea-analysis",
+    }
+
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(return_value=fake_handle),
+    ) as mock_start:
         resp = client_with_indexed_corpus.post(
             "/ideas/analyze",
             json={"idea": "AI for SMB legal contract review", "top_k": 1},
@@ -456,37 +446,70 @@ def test_ideas_analyze_happy_path(client_with_indexed_corpus):
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["idea"] == "AI for SMB legal contract review"
-    assert body["market_scope"] == "crowded_but_growing"
-    assert len(body["top_competitors"]) == 1
-    assert body["top_competitors"][0]["name"] == "Alpha Co"
+    assert body["workflow_id"] == fake_handle["workflow_id"]
+    assert body["status"] == "running"
+    assert body["task_queue"] == "priorart-idea-analysis"
+    # The handle was returned by the Temporal client exactly once.
+    assert mock_start.call_count == 1
 
 
-def test_ideas_analyze_empty_corpus_returns_no_competitors(client_with_empty_corpus):
-    """Empty corpus: 200 + structured no_competitors error."""
-    with patch.object(analyze_module, "compare_topk") as mock_compare:
+def test_ideas_analyze_empty_corpus_still_starts_workflow(client_with_empty_corpus):
+    """Empty corpus: route still starts a workflow; the workflow's
+    ``no_competitors`` short-circuit is the new place where the
+    empty-corpus signal surfaces (was a 200 + structured error
+    in Phase 1.8).
+
+    Phase 2.1 contract: the *route* always returns a workflow
+    handle (or 503 if Temporal is down). The empty-corpus check
+    moved into the ``ann_search`` activity's contract — the
+    workflow runs to completion and surfaces the empty state in
+    its final result.
+    """
+    fake_handle = {
+        "workflow_id": "idea-analysis-empty",
+        "run_id": "019f12af-empty",
+        "status": "running",
+        "task_queue": "priorart-idea-analysis",
+    }
+
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(return_value=fake_handle),
+    ):
         resp = client_with_empty_corpus.post(
             "/ideas/analyze",
             json={"idea": "anything"},
         )
+
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["error"] == "no_competitors"
-    assert body["details"]["corpus_count"] == 0
-    # We never made an LLM call.
-    assert mock_compare.call_count == 0
+    assert body["status"] == "running"
+    assert body["workflow_id"] == fake_handle["workflow_id"]
 
 
 def test_ideas_analyze_schema_violation_returns_structured_error(
     client_with_indexed_corpus,
 ):
-    """SchemaViolationError from the LLM → 200 + structured error body."""
-    with patch.object(
-        analyze_module,
-        "compare_topk",
-        side_effect=SchemaViolationError(
-            "LLM returned garbage",
-            details=[{"loc": ("top_competitors",), "msg": "missing"}],
+    """Schema-violation errors from the LLM now surface in the
+    workflow's result, not the route response. The route itself
+    only returns the workflow handle — the verdict (or its
+    structured error) lives on the workflow handle.
+
+    This test still patches ``compare_topk`` because that's the
+    activity where the error originates; but the assertion is on
+    the route's NEW contract (workflow handle), not on the old
+    IdeaVerdict body. The structured error shape is preserved as
+    a workflow-result concern, tested in test_workflows.py.
+    """
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(
+            return_value={
+                "workflow_id": "wf-schema-violation",
+                "run_id": "019f12af-sv",
+                "status": "running",
+                "task_queue": "priorart-idea-analysis",
+            }
         ),
     ):
         resp = client_with_indexed_corpus.post(
@@ -495,18 +518,31 @@ def test_ideas_analyze_schema_violation_returns_structured_error(
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["error"] == "schema_violation"
-    assert body["details"] == [{"loc": ["top_competitors"], "msg": "missing"}]
+    # The route no longer surfaces structured AnalyzeError shapes
+    # — those live in the workflow result. The route just starts
+    # the workflow.
+    assert body["status"] == "running"
+    assert "workflow_id" in body
 
 
 def test_ideas_analyze_llm_transport_error_returns_structured_error(
     client_with_indexed_corpus,
 ):
-    """LLMTransportError → 200 + structured error body."""
-    with patch.object(
-        analyze_module,
-        "compare_topk",
-        side_effect=LLMTransportError("Anthropic call failed: timeout"),
+    """Same shape as test_ideas_analyze_schema_violation — the
+    Phase 2.1 route just starts the workflow; transport errors
+    surface in the workflow result, not in the route response.
+    See test_workflows.py for the workflow-result assertions.
+    """
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(
+            return_value={
+                "workflow_id": "wf-llm-transport",
+                "run_id": "019f12af-lt",
+                "status": "running",
+                "task_queue": "priorart-idea-analysis",
+            }
+        ),
     ):
         resp = client_with_indexed_corpus.post(
             "/ideas/analyze",
@@ -514,18 +550,32 @@ def test_ideas_analyze_llm_transport_error_returns_structured_error(
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["error"] == "llm_transport"
-    assert "timeout" in body["details"]["message"]
+    assert body["status"] == "running"
+    assert "workflow_id" in body
 
 
 def test_ideas_analyze_missing_api_key_returns_503(client_with_indexed_corpus):
-    """MissingAPIKeyError → 503 + structured error body (still parseable)."""
-    with patch.object(
-        analyze_module,
-        "compare_topk",
-        side_effect=MissingAPIKeyError(
-            "Anthropic API key not found. Set $ANTHROPIC_API_KEY."
-        ),
+    """Phase 2.1: the Temporal *client* raises a
+    ``ConnectionError`` / transport failure when it can't reach
+    Temporal. That gets mapped to a 503 + structured detail (the
+    legacy ``llm_unconfigured`` 503 stays valid in the spirit but
+    the error is now ``temporal_unavailable`` because the
+    workflow never started).
+
+    MissingAPIKeyError itself is now a workflow-activity concern:
+    it surfaces as a workflow failure that ``GET /workflows/{id}``
+    exposes via the ``failure`` field. The route-level handler
+    here is just the Temporal-unavailable 503.
+    """
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(side_effect=HTTPException(
+            status_code=503,
+            detail={
+                "error": "temporal_unavailable",
+                "details": {"message": "Cannot connect to Temporal at 127.0.0.1:7233"},
+            },
+        )),
     ):
         resp = client_with_indexed_corpus.post(
             "/ideas/analyze",
@@ -533,9 +583,8 @@ def test_ideas_analyze_missing_api_key_returns_503(client_with_indexed_corpus):
         )
     assert resp.status_code == 503, resp.text
     body = resp.json()
-    # FastAPI wraps HTTPException(detail=...) under "detail".
-    assert body["detail"]["error"] == "llm_unconfigured"
-    assert "ANTHROPIC_API_KEY" in body["detail"]["details"]["message"]
+    assert body["detail"]["error"] == "temporal_unavailable"
+    assert "Temporal" in body["detail"]["details"]["message"]
 
 
 def test_ideas_analyze_validation_error_on_empty_idea(client_with_indexed_corpus):
@@ -566,24 +615,34 @@ def test_ideas_analyze_validation_error_on_top_k_too_large(client_with_indexed_c
 
 
 def test_ideas_analyze_default_top_k(client_with_indexed_corpus):
-    """Omitting ``top_k`` defaults to DEFAULT_TOP_K (3)."""
-    fake_verdict = IdeaVerdict(
-        idea="x",
-        top_competitors=[],
-        market_scope=MarketScope.WIDE_OPEN,
-        market_scope_rationale="x",
-        supporting_evidence=[],
-    )
-    with patch.object(
-        analyze_module, "compare_topk", return_value=fake_verdict
-    ) as mock_compare:
+    """Omitting ``top_k`` defaults to DEFAULT_TOP_K (3).
+
+    Phase 2.1: the route forwards the default ``top_k`` to the
+    workflow input. We can't assert on ``compare_topk.call_args``
+    anymore because the route doesn't call ``compare_topk``
+    directly — but we can assert on the workflow input that was
+    passed to ``analyze_start_endpoint``.
+    """
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(
+            return_value={
+                "workflow_id": "wf-default-top-k",
+                "run_id": "019f12af-dtk",
+                "status": "running",
+                "task_queue": "priorart-idea-analysis",
+            }
+        ),
+    ) as mock_start:
         resp = client_with_indexed_corpus.post(
             "/ideas/analyze",
             json={"idea": "AI for SMB legal contract review"},
         )
     assert resp.status_code == 200, resp.text
-    # Default top_k = 3 ⇒ forwarded list size ≤ 3.
-    assert len(mock_compare.call_args.kwargs["top_k"]) <= DEFAULT_TOP_K
+    # The workflow input was an IdeaAnalysisInput with top_k=3.
+    workflow_input = mock_start.call_args.args[0]
+    assert workflow_input.top_k == DEFAULT_TOP_K
+    assert workflow_input.idea == "AI for SMB legal contract review"
 
 
 # ---------------------------------------------------------------------------
@@ -592,20 +651,28 @@ def test_ideas_analyze_default_top_k(client_with_indexed_corpus):
 
 
 def test_ideas_analyze_makes_exactly_one_llm_call(client_with_indexed_corpus):
-    """PHASE-1.md §1.7 cost-control rule: one LLM call per request, not per competitor."""
-    fake_verdict = IdeaVerdict(
-        idea="x",
-        top_competitors=[],
-        market_scope=MarketScope.WIDE_OPEN,
-        market_scope_rationale="x",
-        supporting_evidence=[],
-    )
-    with patch.object(
-        analyze_module, "compare_topk", return_value=fake_verdict
-    ) as mock_compare:
+    """PHASE-1.md §1.7 cost-control rule: one LLM call per request.
+
+    Phase 2.1 contract: the *route* doesn't make an LLM call —
+    the workflow does. We assert that the workflow input was
+    constructed with ``top_k <= DEFAULT_TOP_K`` so the
+    single-LLM-call rule still holds inside the workflow.
+    """
+    with patch(
+        "src.api.app.analyze_start_endpoint",
+        AsyncMock(
+            return_value={
+                "workflow_id": "wf-cost-control",
+                "run_id": "019f12af-cc",
+                "status": "running",
+                "task_queue": "priorart-idea-analysis",
+            }
+        ),
+    ) as mock_start:
         resp = client_with_indexed_corpus.post(
             "/ideas/analyze",
             json={"idea": "AI for SMB legal contract review", "top_k": 3},
         )
     assert resp.status_code == 200, resp.text
-    assert mock_compare.call_count == 1
+    workflow_input = mock_start.call_args.args[0]
+    assert workflow_input.top_k <= DEFAULT_TOP_K

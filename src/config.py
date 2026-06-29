@@ -36,3 +36,17 @@ EMBEDDING_DIM = 1024
 
 # LLM — Anthropic Claude Sonnet 4.5 for the structured-comparison call.
 ANTHROPIC_MODEL = os.getenv("PRIORART_ANTHROPIC_MODEL", "claude-sonnet-4-5")
+
+# Temporal (Phase 2.1).
+#
+# ``TEMPORAL_ADDRESS`` is the gRPC endpoint the worker connects to
+# and the FastAPI client starts workflows on. ``127.0.0.1:7233`` is
+# the Temporal CLI default for ``temporal server start-dev``.
+#
+# ``TEMPORAL_NAMESPACE`` and ``TEMPORAL_TASK_QUEUE`` are the
+# namespace + task queue the worker polls. The default namespace
+# is "default" for the dev server; production migrations
+# (``docs/OPERATIONS.md``) would point these at a real cluster.
+TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "127.0.0.1:7233")
+TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
+TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "priorart-idea-analysis")

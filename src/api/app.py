@@ -4,7 +4,16 @@ Phase 1.3: ``/healthz`` returns the real ``corpus_count`` from
 ``company_embeddings`` once ingest has run.
 Phase 1.4: ``POST /search`` — ANN retrieval against the corpus.
 Phase 1.8: ``POST /ideas/analyze`` — orchestrates embed → ANN search
-        → LLM compare → ``IdeaVerdict``.
+        → LLM compare → ``IdeaVerdict`` (legacy synchronous path).
+Phase 2.1: ``POST /ideas/analyze`` is now a Temporal client — it
+        starts an ``IdeaAnalysisWorkflow`` and returns the workflow
+        handle (workflow_id, run_id, status). The synchronous
+        ``analyze_endpoint`` library function is preserved for
+        direct callers (tests, notebooks, the Phase 1.8
+        backwards-compat shim) but no longer reaches an LLM from
+        the FastAPI process. ``GET /workflows/{id}`` describes a
+        workflow's status + result; ``GET /workflows/{id}/result``
+        is the block-poll convenience route.
 Phase 2.3: ``/healthz`` returns ``langfuse_enabled`` (boolean) so
         operators can confirm Langfuse tracing is wired without
         opening the Langfuse UI. ``init_langfuse`` runs in the
@@ -25,11 +34,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.api.analyze import (
-    AnalyzeError,
-    AnalyzeRequest,
-    analyze_endpoint,
-)
+from src.api.analyze import AnalyzeRequest
 from src.api.db import get_engine
 from src.api.search import (
     CorpusNotIndexedError,
@@ -38,14 +43,17 @@ from src.api.search import (
     SearchResponse,
     search_endpoint,
 )
+from src.api.workflows import (
+    AnalyzeStartResponse,
+    WorkflowStatusResponse,
+    analyze_start_endpoint,
+    workflow_result_endpoint,
+    workflow_status_endpoint,
+)
 from src.config import EMBEDDING_MODEL
 from src.data.models import CompanyEmbedding
-from src.llm.compare import (
-    LLMTransportError,
-    MissingAPIKeyError,
-    SchemaViolationError,
-)
 from src.observability.langfuse import init_langfuse, is_tracing_enabled
+from src.workflow.shared import IdeaAnalysisInput
 
 # ---------------------------------------------------------------------------
 # App factory + lifespan (Phase 2.3 Langfuse init)
@@ -207,95 +215,148 @@ def search(
 
 
 # ---------------------------------------------------------------------------
-# /ideas/analyze route (Phase 1.8)
+# /ideas/analyze route (Phase 2.1 — Temporal client)
 # ---------------------------------------------------------------------------
-
-
-#: Response model is ``Union[IdeaVerdict, AnalyzeError]``; both are
-#: 200s. FastAPI picks the right ``response_model`` for serialisation
-#: based on the return type. We document the four ``AnalyzeError``
-#: shapes in the route's ``responses`` block so OpenAPI reflects
-#: them.
+#
+# Phase 2.1 contract: ``POST /ideas/analyze`` no longer runs the
+# embed → ANN → LLM pipeline inline. It starts an
+# ``IdeaAnalysisWorkflow`` on Temporal and returns the handle. The
+# verdict (or a structured error) lives at
+# ``GET /workflows/{id}`` / ``GET /workflows/{id}/result``.
+#
+# Why a module-level reference to ``analyze_start_endpoint`` (instead
+# of an inline ``await client.start_workflow(...)``)? The
+# HTTP-layer tests in ``tests/test_analyze.py`` patch
+# ``src.api.app.analyze_start_endpoint`` with an ``AsyncMock`` to
+# assert the wire shape without standing up Temporal. The function
+# must therefore be importable from the ``src.api.app`` namespace
+# — we import-and-rename it at module load.
 @app.post(
     "/ideas/analyze",
+    response_model=AnalyzeStartResponse,
     status_code=status.HTTP_200_OK,
     responses={
         200: {
             "description": (
-                "Either a validated IdeaVerdict (success) or a "
-                "structured AnalyzeError. See the AnalyzeError schema "
-                "for the error variants."
+                "Workflow handle (workflow_id + run_id + status=running). "
+                "Poll ``GET /workflows/{id}`` for completion; read the "
+                "verdict at ``GET /workflows/{id}/result``."
             ),
         },
-        422: {"description": "Validation error (empty / oversized idea)."},
+        422: {
+            "description": "Validation error (empty / oversized idea, top_k out of range).",
+        },
         503: {
             "description": (
-                "Corpus is missing (table unreachable), or "
-                "ANTHROPIC_API_KEY is not configured. The latter is "
-                "a 503 because the endpoint is useless without an "
-                "LLM — clients should retry after configuring."
+                "Temporal is unreachable (``temporal_unavailable``) — "
+                "the workflow never started. Retry after the Temporal "
+                "server is back up."
             ),
         },
     },
 )
-def analyze(
-    request: AnalyzeRequest,
-    engine: EngineDep,
-    embedder: EmbedderDep,
-):
-    """Orchestrate: embed → ANN search → LLM compare → IdeaVerdict.
+async def analyze(request: AnalyzeRequest) -> AnalyzeStartResponse:
+    """Start an ``IdeaAnalysisWorkflow`` and return its handle.
 
-    The happy path returns a Pydantic-validated ``IdeaVerdict`` with
-    the top-K competitors, market-scope signal, and supporting
-    evidence.
+    The synchronous Phase 1.8 path is preserved in
+    ``src.api.analyze.analyze_endpoint`` for direct callers (the
+    library-function tests in ``tests/test_analyze.py`` still
+    exercise that surface). The HTTP layer here is Temporal-only;
+    no LLM call happens in the FastAPI process for this route.
 
-    The error contract (all 200s, not 500s) covers four cases:
+    Returns
+    -------
+    AnalyzeStartResponse
+        ``{workflow_id, run_id, status: "running", task_queue}``.
 
-    - ``no_competitors`` — corpus is empty / no hits. This is a
-      legitimate "genuinely novel" signal, not a failure.
-    - ``schema_violation`` — the LLM returned something instructor
-      couldn't coerce into ``IdeaVerdict`` after retries. ``details``
-      carries the Pydantic error dict so the client can debug.
-    - ``llm_transport`` — Anthropic SDK raised a non-validation error
-      (timeout, network, 5xx). ``details`` carries the exception
-      class + message.
-    - ``llm_unconfigured`` — ``ANTHROPIC_API_KEY`` is missing. This is
-      also a 503 (see the ``responses`` block) — the endpoint can't
-      function without an LLM, but we still emit a structured
-      AnalyzeError body so the client has something parseable.
-
-    A real 503 (corpus missing table) is the only case where we
-    raise — there's no IdeaVerdict-shaped response to return, just
-    "the corpus is broken, retry later".
+    Raises
+    ------
+    HTTPException(503)
+        Temporal client is unreachable. The detail carries
+        ``{"error": "temporal_unavailable", "details": {...}}``.
     """
-    try:
-        result = analyze_endpoint(request, engine=engine, embedder=embedder)
-    except CorpusNotIndexedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="corpus not reachable",
-        ) from exc
-    except MissingAPIKeyError as exc:
-        # 503 + structured body. We use HTTPException for the status
-        # code and smuggle the AnalyzeError shape in the ``detail``
-        # field — clients should still get something parseable.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error": "llm_unconfigured",
-                "details": {"message": str(exc)},
-            },
-        ) from exc
-    except SchemaViolationError as exc:
-        # Spec: "No 500s on schema-violation — surface as
-        # {"error": "schema_violation", "details": ...}" with 200.
-        return AnalyzeError(error="schema_violation", details=exc.details)
-    except LLMTransportError as exc:
-        # Same shape as schema_violation — structured 200 body so
-        # the client can tell "the LLM is sick" from "the LLM
-        # returned garbage". The cause is in details.
-        return AnalyzeError(
-            error="llm_transport",
-            details={"message": str(exc), "type": type(exc).__name__},
-        )
-    return result
+    workflow_input = IdeaAnalysisInput(
+        idea=request.idea,
+        top_k=request.top_k,
+        request_id=None,
+    )
+    return await analyze_start_endpoint(workflow_input)
+
+
+# ---------------------------------------------------------------------------
+# /workflows/{id} route (Phase 2.1 — Temporal describe)
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/workflows/{workflow_id}",
+    response_model=WorkflowStatusResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": (
+                "Workflow status (RUNNING / COMPLETED / FAILED / "
+                "TIMED_OUT / CANCELLED / TERMINATED / CONTINUED_AS_NEW), "
+                "the in-flight ``phase`` from the ``get_status`` query, "
+                "and — for completed workflows — the final "
+                "``IdeaVerdict`` in ``result``."
+            ),
+        },
+        404: {
+            "description": "Unknown workflow id.",
+        },
+        503: {
+            "description": "Temporal is unreachable.",
+        },
+    },
+)
+async def workflows_get(workflow_id: str) -> WorkflowStatusResponse:
+    """Describe a Temporal workflow.
+
+    The wire shape is ``WorkflowStatusResponse`` (see
+    ``src.api.workflows``). For completed workflows the ``result``
+    field is populated with the ``IdeaVerdict``; for failed
+    workflows the ``failure`` field carries the Temporal error
+    metadata. Workflows that have not yet finished return
+    ``status: "RUNNING"`` + a ``phase`` string from the
+    ``get_status`` query handler in the workflow code.
+    """
+    return await workflow_status_endpoint(workflow_id)
+
+
+# ---------------------------------------------------------------------------
+# /workflows/{id}/result route (Phase 2.1 — block-poll convenience)
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/workflows/{workflow_id}/result",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": (
+                "Block-polls the workflow until it reaches a terminal "
+                "state, then returns either the ``IdeaVerdict`` or a "
+                "structured failure body."
+            ),
+        },
+        404: {"description": "Unknown workflow id."},
+        503: {"description": "Temporal is unreachable."},
+    },
+)
+async def workflows_result(workflow_id: str) -> dict:
+    """Block-poll a workflow until it finishes.
+
+    Convenience wrapper around ``workflow_status_endpoint`` for
+    callers that don't want to manage the polling loop themselves.
+    Caps at ``RESULT_POLL_TIMEOUT_SECONDS`` (30 s) so a hung
+    workflow doesn't wedge the FastAPI worker; clients that need a
+    longer wait can fall back to polling ``/workflows/{id}``
+    directly.
+
+    The response body shape is intentionally a plain dict (not a
+    Pydantic model) because the verdict has many variants — a
+    successful ``IdeaVerdict``, a structured failure, or a
+    timeout-exceeded body. Callers parse ``status`` first.
+    """
+    return await workflow_result_endpoint(workflow_id)
