@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "source_url": "https://hn.algolia.com/api/v1/search",
+  "scrape_date": "2026-06-29",
+  "count": 1000,
+  "date_range": {
+    "oldest_post": "2023-07-05T19:06:43Z",
+    "newest_post": "2026-06-28T15:26:14Z",
+    "search_window": [
+      "2023-06-30T09:19:29Z",
+      "2026-06-29T09:19:29Z"
+    ]
+  },
+  "points_floor": 50,
+  "lookback_days": 1095,
+  "max_records_cap": 4000,
+  "no_launch_url_count": 0,
+  "dead_url_count": 0,
+  "firecrawl_success_count": 0,
+  "firecrawl_success_rate": null,
+  "scraped_at_utc": "2026-06-29T09:19:34Z",
+  "snapshot_filename": "hn_show_2026-06-29.jsonl"
+}

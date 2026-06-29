@@ -53,6 +53,14 @@ health: ## curl the API on $(PORT)/healthz. Exits 0 on HTTP 200.
 scrape: ## Refresh the YC snapshot at data/snapshots/yc_<date>.jsonl.
 	$(PY) -m src.data.scrape_yc
 
+.PHONY: scrape-hn
+scrape-hn: ## Refresh the HN "Show HN" snapshot at data/snapshots/hn_show_<date>.jsonl (3-year lookback, Firecrawl-scrape external URLs).
+	$(PY) -m src.data.scrape_hn
+
+.PHONY: hn-scrape
+hn-scrape: scrape-hn ## Alias for `scrape-hn` (card t_56b10368 acceptance).
+	@true
+
 .PHONY: ingest
 ingest: ## Ingest the latest snapshot into Postgres + pgvector.
 	$(PY) -m src.data.ingest --snapshot data/snapshots/yc_$$(ls -1 data/snapshots/ | grep '\.jsonl$$' | sort | tail -1)
