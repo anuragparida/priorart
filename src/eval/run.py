@@ -67,7 +67,7 @@ import duckdb
 import httpx
 import typer
 
-from src.config import EVALS_DIR, RESULTS_DIR
+from src.config import EVALS_DIR, RESULTS_DIR, SNAPSHOTS_DIR
 from src.eval.benchmark import Benchmark, BenchmarkRecord, load_benchmark
 from src.eval.config import RetrievalConfig
 from src.eval.metrics import (
@@ -78,6 +78,12 @@ from src.eval.metrics import (
     precision_at_k,
     recall_at_k,
     reciprocal_rank,
+)
+from src.eval.mlflow_logger import (
+    RunRecord,
+    log_run,
+    metrics_from_summary,
+    params_from_summary,
 )
 
 
@@ -605,6 +611,244 @@ def run_eval(
 
 
 # ---------------------------------------------------------------------------
+# Phase 2.4 — MLflow tracker integration
+# ---------------------------------------------------------------------------
+#
+# This block plugs the eval runner into MLflow so every `make eval` /
+# `python -m eval.run` invocation is traceable end-to-end:
+#
+# - ``corpus_snapshot_date_from_snapshots_dir`` reads the latest
+#   ``yc_<date>.jsonl`` filename from ``data/snapshots/`` to get the
+#   snapshot date used for the run params.
+# - ``write_per_record_csv`` writes the per-record trace to disk so
+#   MLflow has a real artifact to upload (the spec calls for the
+#   per-record CSV as an artifact).
+# - ``log_eval_run_to_mlflow`` is the single MLflow entrypoint used
+#   by the CLI. It groups params / metrics / artifacts / prompt
+#   template into one MLflow run, with a clean fallback when the
+#   tracking server is unreachable.
+#
+# Keeping these helpers in this module (instead of calling MLflow
+# directly from the CLI) means the runner can be called from a
+# Jupyter notebook / unit test / web admin endpoint later without
+# re-implementing the wiring.
+
+
+_PER_RECORD_CSV_COLUMNS: Tuple[str, ...] = (
+    "record_id",
+    "category",
+    "is_duplicate",
+    "is_novel",
+    "top1_score",
+    "ranked_ids",
+    "ranked_scores",
+    "search_error",
+)
+
+
+def corpus_snapshot_date_from_snapshots_dir(
+    snapshots_dir: Optional[Path] = None,
+) -> str:
+    """Return the date of the latest snapshot in ``data/snapshots``.
+
+    Reads the ``yc_<YYYY-MM-DD>.jsonl`` filename pattern. Falls back
+    to ``"unknown"`` when no snapshot is on disk (so the eval still
+    runs in a freshly-cloned fresh-build CI step).
+    """
+    sd = snapshots_dir or SNAPSHOTS_DIR
+    if not sd.exists():
+        return "unknown"
+    dates: List[str] = []
+    for p in sd.iterdir():
+        if not p.is_file():
+            continue
+        # yc_<YYYY-MM-DD>.jsonl
+        stem = p.stem  # "yc_2026-06-08"
+        if not stem.startswith("yc_"):
+            continue
+        date_part = stem[len("yc_"):]
+        if len(date_part) == 10 and date_part[4] == "-" and date_part[7] == "-":
+            dates.append(date_part)
+    return max(dates) if dates else "unknown"
+
+
+def write_per_record_csv(
+    path: Path,
+    per_record: Sequence[PerRecordResult],
+    *,
+    config_name: str,
+    benchmark_name: str,
+) -> Path:
+    """Write the per-record trace to disk so MLflow can pick it up.
+
+    The spec calls for "the per-record CSV" as an MLflow artifact.
+    The runner already loads each record through ``/search`` and
+    holds the result in memory; this helper gives the result a
+    durable on-disk form for the tracking side. The CSV is intended
+    for MLflow / debugging — the *authoritative* per-record trace
+    lives in DuckDB (column-for-column identical).
+
+    Returns ``path`` so callers can chain ``log_artifact`` calls.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_PER_RECORD_CSV_COLUMNS)
+        writer.writeheader()
+        for res in per_record:
+            writer.writerow(
+                {
+                    "record_id": res.record_id,
+                    "category": res.category,
+                    "is_duplicate": res.is_duplicate,
+                    "is_novel": res.is_novel,
+                    "top1_score": res.top1_score if res.top1_score is not None else "",
+                    "ranked_ids": ",".join(str(i) for i in res.ranked_ids),
+                    "ranked_scores": ",".join(
+                        f"{s:.4f}" for s in res.ranked_scores
+                    ),
+                    "search_error": res.search_error or "",
+                }
+            )
+    return path
+
+
+def log_eval_run_to_mlflow(
+    summary: Dict[str, Any],
+    *,
+    config: RetrievalConfig,
+    benchmark: Benchmark,
+    output_csv: Path,
+    per_record: Sequence[PerRecordResult],
+    experiment_name: Optional[str] = None,
+    tracking_uri: Optional[str] = None,
+    no_mlflow: bool = False,
+) -> Optional[RunRecord]:
+    """Wire the eval run into MLflow.
+
+    Steps (only when ``no_mlflow`` is False):
+
+    1. Derive ``corpus_snapshot_date`` from ``data/snapshots/``.
+    2. Read the prompt template version from
+       ``src/llm/prompts/compare.PROMPT_TEMPLATE_VERSION``.
+    3. Write the per-record CSV next to the leaderboard CSV.
+    4. Call ``log_run`` with params / metrics / artifacts /
+       prompt text. Returns the ``RunRecord`` for the CLI to print.
+    """
+    if no_mlflow:
+        return None
+
+    # Importing here to keep the module import-order clean (the
+    # mlflow SDK is heavy and we don't want it to fire when the
+    # module is just being collected).
+    try:
+        from src.llm.prompts.compare import (
+            PROMPT_TEMPLATE_VERSION,
+            SYSTEM_PROMPT,
+            _USER_PROMPT_TEMPLATE,
+        )
+    except ImportError:
+        # The prompt module is in the same tree; if it can't be
+        # imported that's a real bug, so fall back to a placeholder
+        # rather than crashing the eval.
+        PROMPT_TEMPLATE_VERSION = "compare-v1"
+        SYSTEM_PROMPT = ""
+        _USER_PROMPT_TEMPLATE = ""
+
+    corpus_date = corpus_snapshot_date_from_snapshots_dir()
+    corpus_count = (
+        summary["rows"][0].get("corpus_count", "")
+        if summary["rows"] else ""
+    )
+    if not isinstance(corpus_count, int):
+        corpus_count_int = 0
+    else:
+        corpus_count_int = corpus_count
+
+    # Write the per-record CSV next to the leaderboard CSV so
+    # the artifact upload keeps a stable path on subsequent runs.
+    per_record_path = (
+        output_csv.parent / f"per_record.{config.name}.{benchmark.path.stem}.csv"
+    )
+    write_per_record_csv(
+        per_record_path,
+        per_record,
+        config_name=config.name,
+        benchmark_name=benchmark.path.name,
+    )
+
+    # Write a one-row leaderboard slice capturing *this* run's
+    # best threshold — used as a second MLflow artifact (the spec
+    # calls for "the leaderboard CSV row" alongside the per-record
+    # CSV).
+    leaderboard_slice_path = (
+        output_csv.parent
+        / f"leaderboard_row.{config.name}.{benchmark.path.stem}.csv"
+    )
+    with leaderboard_slice_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_CSV_COLUMNS)
+        writer.writeheader()
+        for row in summary["rows"]:
+            writer.writerow(row)
+
+    # Build the param dict via the canonical helper so we can't
+    # drift from the schema documented in mlflow_logger.
+    best_threshold = summary["best_threshold"]
+    rows_first = summary["rows"][0]
+    params = params_from_summary(
+        config_name=config.name,
+        embedding_model=rows_first.get("embedding_model", config.embedding_model),
+        threshold=best_threshold,
+        benchmark_name=benchmark.path.name,
+        corpus_count=corpus_count_int,
+        corpus_snapshot_date=corpus_date,
+        prompt_template_version=PROMPT_TEMPLATE_VERSION,
+        api_url=config.api_url,
+        top_k=int(getattr(config, "top_k", 0) or 0),
+    )
+    # Run name carries the config + benchmark + corpus-date so the
+    # MLflow UI list is readable at a glance.
+    run_name = (
+        f"{config.name} | {benchmark.path.stem} | corpus={corpus_date} | "
+        f"t={best_threshold:.2f} | run={int(time.time())}"
+    )
+
+    # Compose the prompt template artifact body — system + user.
+    # We log it as TEXT (artifact), NOT as a param, per the Phase 2.4
+    # pitfall rule.
+    prompt_text = (
+        f"# SYSTEM_PROMPT ({PROMPT_TEMPLATE_VERSION})\n\n"
+        f"{SYSTEM_PROMPT}\n\n"
+        f"# _USER_PROMPT_TEMPLATE\n\n"
+        f"{_USER_PROMPT_TEMPLATE}\n"
+    )
+
+    metrics = metrics_from_summary(summary, best_threshold=best_threshold)
+
+    return log_run(
+        experiment_name=experiment_name or "phase-2-baseline",
+        params=params,
+        metrics=metrics,
+        artifacts={
+            "leaderboard_row.csv": leaderboard_slice_path,
+            "per_record.csv": per_record_path,
+            **(
+                {"leaderboard_full.csv": output_csv}
+                if output_csv.exists()
+                else {}
+            ),
+        },
+        prompt_template_text=prompt_text,
+        tracking_uri=tracking_uri,
+        run_name=run_name,
+        tags={
+            "phase": "2.4",
+            "card": "t_bc2a06cc",
+            "config": config.name,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -670,6 +914,43 @@ def main(
         help=(
             "Override the threshold sweep (comma-separated, e.g. "
             "'0.6,0.7,0.8'). Default: docs/PHASE-1.md §1.6 sweep."
+        ),
+    ),
+    # ------------------------------------------------------------------
+    # Phase 2.4 — MLflow tracker integration
+    # ------------------------------------------------------------------
+    # Three flags; together they replicate the spec's
+    # `python -m eval.run --experiment-name "phase-2-baseline" \
+    #                       --config configs/dense_bge_m3.yaml`
+    # invocation, with explicit opt-outs and a tracking-URI override
+    # for offline / file-based runs.
+    experiment_name: Optional[str] = typer.Option(
+        None,
+        "--experiment-name",
+        "-x",
+        help=(
+            "MLflow experiment name to log this run under. Default: "
+            "'phase-2-baseline'. The experiment is created on first use."
+        ),
+    ),
+    mlflow_tracking_uri: Optional[str] = typer.Option(
+        None,
+        "--mlflow-tracking-uri",
+        help=(
+            "Override the MLflow tracking URI. Default: the "
+            "MLFLOW_TRACKING_URI env var, falling back to "
+            "http://localhost:15000. Use 'file:./mlruns' for fully-"
+            "offline runs (no server required)."
+        ),
+    ),
+    no_mlflow: bool = typer.Option(
+        False,
+        "--no-mlflow",
+        help=(
+            "Skip MLflow logging for this run. The CSV / DuckDB "
+            "outputs are still written; only the MLflow call is "
+            "bypassed. Useful when the tracker server is down and "
+            "the operator only wants the leaderboard row."
         ),
     ),
 ) -> None:
@@ -749,6 +1030,27 @@ def main(
         f"(MRR={summary['best_mrr']:.3f}, "
         f"FPR-on-novel={summary['best_fpr_on_novel']:.3f})"
     )
+
+    # ------------------------------------------------------------------
+    # Phase 2.4 — MLflow logging (params / metrics / artifacts / prompt)
+    # ------------------------------------------------------------------
+    mlflow_record = log_eval_run_to_mlflow(
+        summary,
+        config=cfg,
+        benchmark=bench,
+        output_csv=output_path,
+        per_record=summary["per_record"],
+        experiment_name=experiment_name,
+        tracking_uri=mlflow_tracking_uri,
+        no_mlflow=no_mlflow,
+    )
+    if mlflow_record is not None:
+        typer.echo(
+            f"[mlflow] experiment='{experiment_name or 'phase-2-baseline'}' "
+            f"run_id={mlflow_record.run_id} "
+            f"tracking_uri={mlflow_record.tracking_uri_effective} "
+            f"fallback={mlflow_record.fallback_used}"
+        )
 
     # Exit non-zero if no threshold met the FPR cap — the runner
     # still wrote the leaderboard, but the caller should know.

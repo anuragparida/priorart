@@ -53,6 +53,52 @@ services:
       postgres:
         condition: service_healthy
 
+  # -----------------------------------------------------------------
+  # Phase 2.4 — Self-hosted MLflow tracking server.
+  # -----------------------------------------------------------------
+  # PHASE-2.md §Pitfall is explicit: "Do not put MLflow in the same
+  # container as the API. Separate container, separate concerns.
+  # MLflow is a platform service, not a per-request service."
+  # This service is therefore:
+  #   1. Always-up (no `profiles:` gate — the eval harness reaches
+  #      for it on every `make eval` run).
+  #   2. On port 15000, NOT 5000 — Honcho already owns 5000 on this
+  #      host (AGENTS.md memory note).
+  #   3. SQLite backend (file at /mlflow-data/mlflow.db) so it has
+  #      zero infra deps beyond docker.
+  #   4. Named volume `mlflow-data` so the SQLite DB and the
+  #      artifact root survive container restarts.
+  mlflow:
+    # Pinned to v2.22.0 — the latest local-cached 2.x image that ships
+    # a clean SQLite schema. The eval-harness SDK runs mlflow 3.x via
+    # the v3 client → v2 server wire protocol (proven compatible for
+    # create_run / log_param / log_metric / log_artifact / log_text;
+    # the only client-side quirk is dict-style run.data access, which
+    # the test file accounts for).
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    container_name: priorart-mlflow
+    restart: unless-stopped
+    ports:
+      - "${MLFLOW_PORT:-15000}:5000"
+    volumes:
+      - mlflow-data:/mlflow-data
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri=sqlite:////mlflow-data/mlflow.db
+      - --default-artifact-root=/mlflow-data/artifacts
+      - --host=0.0.0.0
+      - --port=5000
+    healthcheck:
+      # mlflow:* images don't bundle curl/wget by default; use the
+      # in-image python to hit the /health endpoint, which works in
+      # both ghcr.io/mlflow/mlflow:v2.x and v3.x.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:5000/health', timeout=2).status == 200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
   data:
+  mlflow-data:
