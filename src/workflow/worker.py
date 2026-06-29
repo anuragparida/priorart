@@ -29,6 +29,7 @@ from src.workflow.activities import (
     embed_idea,
     llm_compare_topk,
     market_scope_signal,
+    web_fallback_if_empty,
 )
 from src.workflow.workflows import IdeaAnalysisWorkflow
 
@@ -106,6 +107,7 @@ async def _run(
             llm_compare_topk,
             market_scope_signal,
             assemble_verdict,
+            web_fallback_if_empty,
         ],
     )
 

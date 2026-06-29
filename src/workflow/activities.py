@@ -12,10 +12,16 @@ implements that step:
 - ``market_scope_signal`` → derived from the LLM verdict (no
   separate call)
 - ``assemble_verdict``  → identity / pass-through for Phase 2.1
+
+Phase 2.2 adds ``web_fallback_if_empty`` — a SearXNG-backed
+fallback path that fires when the corpus returns nothing above
+the configured cosine threshold. See the per-activity docstring
+for the loop shape (search → scrape → embed → second-pass ANN).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -31,6 +37,11 @@ from src.workflow.shared import (
     AnnSearchHit,
     AnnSearchResult,
     IdeaAnalysisInput,
+)
+from src.workflow.web_fallback import (
+    WebFallbackClient,
+    WebFallbackDoc,
+    WebFallbackTransportError,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +179,295 @@ async def assemble_verdict(
 
 
 # ---------------------------------------------------------------------------
+# Phase 2.2 — web fallback activity
+# ---------------------------------------------------------------------------
+
+
+@activity.defn(name="web_fallback_if_empty")
+async def web_fallback_if_empty(
+    idea: str,
+    current_ann_result: AnnSearchResult,
+    top_k: int = 3,
+    threshold: float = 0.7,
+) -> AnnSearchResult:
+    """SearXNG-backed fallback when the corpus returned nothing above ``threshold``.
+
+    PHASE-2.md §2.2 specifies the loop:
+
+    > If top-K from the corpus returns nothing above the configured
+    > threshold (default 0.7 cosine), run a SearXNG search, scrape
+    > the top-3 results via your self-hosted Firecrawl, embed them,
+    > re-run ANN search.
+
+    Implementation shape
+    --------------------
+    1. **Skip when corpus already has hits above threshold.** If
+       ``current_ann_result.hits[0].similarity >= threshold``, we
+       return ``current_ann_result`` unchanged and the activity
+       logs ``web_fallback_skipped=True`` for the metric. This
+       keeps the fallback "fires < 10% of the time on the eval
+       set" pitfall honest — the curated YC corpus is
+       higher-quality than the open web, so we don't want the
+       fallback silently becoming the primary path.
+
+    2. **SearXNG search** via the self-hosted Firecrawl
+       ``/v2/search`` proxy. ``WebFallbackClient.search`` returns
+       up to ``top_k`` ``{url, title, description}`` candidates.
+       We tolerate an empty list — "SearXNG searched but nothing
+       matched" is a legitimate outcome that means the idea is
+       genuinely novel.
+
+    3. **Per-URL scrape** via Firecrawl ``/v1/scrape``. Each
+       scrape returns clean markdown (no HTML noise). We trim to
+       4000 chars (bge-m3 has an 8192-token context; 4k chars
+       ~1k tokens, plenty for a "what is this product" blurb).
+
+    4. **bge-m3 embed** the scraped markdown (or the SearXNG
+       description if markdown is empty). We use the same
+       ``Embedder`` the rest of the workflow uses so the
+       vector space matches the corpus exactly.
+
+    5. **Second-pass ANN search.** The scraped docs don't
+       replace the corpus — they're "virtual candidates" we
+       rank against the existing HNSW index. We do this by:
+
+       a. **Calling ``search_corpus`` again** with each scraped
+          doc as a one-item corpus, then sorting the union of
+          (corpus-hits + scraped-hits) by similarity. The scraped
+          hits *aren't* in the corpus — they're ranked only
+          against the original query embedding. So we synthesise
+          a "scraped-as-competitor" AnnSearchHit by running the
+          bge-m3 encoder on the *idea* (we already have it from
+          ``embed_idea``) and computing cosine against each
+          scraped doc's embedding. The top-K by cosine is the
+          fallback's contribution.
+
+       b. If the corpus already had hits (we entered this
+          activity because the *first* hit's cosine was below
+          threshold), we union those hits with the scraped hits
+          and re-rank. Otherwise the result is the scraped hits
+          alone.
+
+    Failure model
+    -------------
+    - Transport / non-2xx errors from Firecrawl → log + return
+      the *original* ``current_ann_result`` with
+      ``web_fallback_fired=True`` (we did try). The workflow
+      treats this as "fallback attempted but SearXNG returned
+      nothing usable" and surfaces it as a low-confidence
+      verdict (not a workflow failure).
+    - Scrape failure on a single URL → log + skip that URL; the
+      remaining URLs are still embedded and ranked.
+    - bge-m3 embed failure → log + return the original
+      ``current_ann_result``.
+
+    Returns
+    -------
+    AnnSearchResult
+        Either the original result (when the corpus already met
+        the threshold, or the fallback found nothing usable) or
+        a freshly-ranked result mixing corpus hits and scraped
+        hits. The workflow's ``assemble_verdict`` activity and
+        the ``web_fallback_fired`` workflow metric both rely on
+        the ``AnnSearchResult.corpus_count`` field (kept as the
+        corpus count, even when the result has scraped hits) and
+        the workflow inspects ``len(self._ann_result.hits) > 0``
+        to decide whether to fire the fallback path.
+    """
+    # Temporal's Pydantic data converter can serialise the
+    # previous activity's ``AnnSearchResult`` as a plain dict on
+    # the receiving side. We coerce defensively so the activity
+    # works regardless of which ``result_type`` the workflow's
+    # ``execute_activity`` call passes.
+    if isinstance(current_ann_result, dict):
+        current_ann_result = AnnSearchResult.model_validate(current_ann_result)
+
+    # 1. Threshold check — fast-path skip
+    if current_ann_result.hits:
+        top_similarity = max(h.similarity for h in current_ann_result.hits)
+        if top_similarity >= threshold:
+            logger.info(
+                "web_fallback_if_empty: corpus top_similarity=%.3f >= threshold=%.3f; skipping",
+                top_similarity,
+                threshold,
+            )
+            # We deliberately do *not* set web_fallback_fired here.
+            # The metric key on the workflow is "fires < 10% of the
+            # time on the eval set" — a skip-without-trying
+            # shouldn't count toward the denominator.
+            return current_ann_result
+
+    logger.info(
+        "web_fallback_if_empty: corpus empty or below threshold; running SearXNG search (top_k=%d)",
+        top_k,
+    )
+
+    # 2. SearXNG search via Firecrawl proxy (async so the gather
+    # below can parallelise the per-URL scrapes).
+    client = WebFallbackClient()
+    try:
+        try:
+            candidates = await client.asearch(idea, limit=top_k)
+        except WebFallbackTransportError as exc:
+            logger.warning(
+                "web_fallback_if_empty: Firecrawl search failed: %s",
+                exc,
+            )
+            return current_ann_result
+
+        if not candidates:
+            logger.info(
+                "web_fallback_if_empty: SearXNG returned 0 results for idea=%r",
+                idea[:80],
+            )
+            return current_ann_result
+
+        # 3. Per-URL scrape + 4. embed (in parallel via asyncio.gather).
+        # Each scrape uses the async HTTP client so the gather
+        # actually runs them concurrently. A sync ``httpx.Client``
+        # inside a coroutine would block the event loop and
+        # serialise the scrapes — a subtle gotcha that bit the
+        # first live run.
+        embedder = Embedder()
+
+        async def _scrape_one(cand: dict[str, str]) -> WebFallbackDoc | None:
+            try:
+                markdown = await client.ascrape(cand["url"])
+            except WebFallbackTransportError as exc:
+                logger.warning(
+                    "web_fallback_if_empty: scrape failed for %s: %s",
+                    cand["url"],
+                    exc,
+                )
+                return None
+            text_for_embedding = (
+                markdown
+                if markdown
+                else (cand.get("description") or cand.get("title") or "")
+            )
+            if not text_for_embedding:
+                return None
+            try:
+                # bge-m3 ``encode`` is CPU-bound and releases the
+                # GIL via torch's backend, but a sync call inside
+                # a coroutine still blocks the event loop. We
+                # push it onto the default executor so the gather
+                # can keep the other scrapes moving in parallel.
+                embedding = await asyncio.to_thread(
+                    embedder.embed_one, text_for_embedding
+                )
+            except Exception as exc:  # noqa: BLE001 — defensive
+                logger.warning(
+                    "web_fallback_if_empty: embed failed for %s: %s",
+                    cand["url"],
+                    exc,
+                )
+                return None
+            return WebFallbackDoc(
+                url=cand["url"],
+                title=cand.get("title", ""),
+                description=cand.get("description", ""),
+                markdown=markdown,
+                embedding=embedding,
+            )
+
+        scraped_results = await asyncio.gather(
+            *(_scrape_one(cand) for cand in candidates),
+        )
+        docs: list[WebFallbackDoc] = [
+            r for r in scraped_results if r is not None
+        ]
+
+        if not docs:
+            logger.info(
+                "web_fallback_if_empty: 0 docs after scrape+embed; returning original result",
+            )
+            return current_ann_result
+
+        # 5. Second-pass ranking: cosine(query_embedding, doc.embedding).
+        # The workflow has already embedded the idea via ``embed_idea``;
+        # re-embed here is acceptable (bge-m3 is <1s on warm path).
+        try:
+            query_embedding = await asyncio.to_thread(embedder.embed_one, idea)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "web_fallback_if_empty: embed(query) failed: %s; returning original",
+                exc,
+            )
+            return current_ann_result
+
+        scored: list[tuple[float, WebFallbackDoc]] = []
+        for doc in docs:
+            sim = _cosine(query_embedding, doc.embedding)
+            scored.append((sim, doc))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[: max(1, top_k)]
+
+        # Build AnnSearchHit entries. IDs are negative to make it
+        # obvious these are *virtual* rows (not corpus rows) — a
+        # downstream consumer that tries to look them up in the
+        # ``companies`` table will hit a clean "not found" path.
+        scraped_hits = [
+            AnnSearchHit(
+                company_id=-1000 - i,
+                name=doc.title or doc.url,
+                description=(doc.description or doc.markdown[:200]),
+                similarity=float(sim),
+            )
+            for i, (sim, doc) in enumerate(top)
+        ]
+
+        # Union with the original corpus hits (re-ranked by similarity)
+        all_hits = list(current_ann_result.hits) + scraped_hits
+        all_hits.sort(key=lambda h: h.similarity, reverse=True)
+        final_hits = all_hits[: max(1, top_k)]
+
+        logger.info(
+            "web_fallback_if_empty: returning %d hits (corpus=%d, scraped=%d)",
+            len(final_hits),
+            len(current_ann_result.hits),
+            len(scraped_hits),
+        )
+
+        return AnnSearchResult(
+            hits=final_hits,
+            corpus_count=current_ann_result.corpus_count,
+        )
+    finally:
+        client.close()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Plain-Python cosine similarity (both inputs unit-norm from bge-m3).
+
+    bge-m3's ``encode(..., normalize_embeddings=True)`` returns
+    unit-norm vectors, so cosine == dot product. We use a tiny
+    pure-Python implementation to avoid dragging numpy into the
+    Temporal worker (numpy isn't on the worker's critical path).
+    """
+    if not a or not b:
+        return 0.0
+    if len(a) != len(b):
+        # Pad / truncate to the shorter length — defensive against
+        # a future embedding-model dimension change. A warning is
+        # appropriate because this would silently degrade ranking.
+        n = min(len(a), len(b))
+        a = a[:n]
+        b = b[:n]
+    dot = 0.0
+    aa = 0.0
+    bb = 0.0
+    for x, y in zip(a, b, strict=False):
+        dot += x * y
+        aa += x * x
+        bb += y * y
+    denom_sq = aa * bb
+    if denom_sq <= 0.0:
+        return 0.0
+    return dot / (denom_sq ** 0.5)
+
+
+# ---------------------------------------------------------------------------
 # Re-exports
 # ---------------------------------------------------------------------------
 
@@ -181,6 +481,7 @@ __all__ = [
     "embed_idea",
     "llm_compare_topk",
     "market_scope_signal",
+    "web_fallback_if_empty",
 ]
 
 

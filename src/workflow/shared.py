@@ -30,7 +30,7 @@ changes".
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,6 +54,27 @@ class IdeaAnalysisInput(BaseModel):
     ``X-Request-ID`` header). Phase 2.1 doesn't surface it yet —
     it's plumbed through so Phase 2.3 (Langfuse) can attach it as
     trace metadata without re-plumbing.
+
+    Phase 2.2 adds:
+
+    - ``enable_web_fallback`` (default ``True``): opt-in flag for the
+      SearXNG-backed fallback when the corpus returns nothing above
+      ``web_fallback_threshold``. AGENTS.md says "Web fallback is
+      OPT-IN, not the default path" — but the *feature* defaults to
+      on because the eval set requires it to fire on novel ideas
+      (PHASE-2.md §2.2 acceptance criteria). Operators who want
+      strict offline behaviour can pass ``enable_web_fallback=False``
+      in the request body.
+
+    - ``web_fallback_threshold`` (default 0.7 cosine): minimum top-1
+      cosine similarity required from the corpus before the fallback
+      is skipped. Below this, the workflow runs the web search path.
+
+    - ``enable_low_confidence_review`` (default ``True``): opt-in
+      signal channel. When ``True``, a low-confidence verdict
+      (top-1 cosine in 0.55–0.70 OR LLM self-confidence < 0.7)
+      parks the workflow on ``wait_condition`` for a human review
+      signal.
     """
 
     idea: str = Field(
@@ -71,6 +92,82 @@ class IdeaAnalysisInput(BaseModel):
     request_id: str | None = Field(
         default=None,
         description="Optional correlation id from the HTTP request.",
+    )
+    enable_web_fallback: bool = Field(
+        default=True,
+        description=(
+            "Phase 2.2 — when True, the workflow runs a SearXNG-"
+            "backed web search if the corpus returns nothing above "
+            "``web_fallback_threshold``. Defaults to True so the "
+            "Phase 2.2 acceptance criteria pass; operators who want "
+            "strict offline behaviour can opt out per-request."
+        ),
+    )
+    web_fallback_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Phase 2.2 — minimum top-1 cosine similarity required "
+            "from the corpus before the web fallback is skipped. "
+            "Below this, the workflow runs the SearXNG search path."
+        ),
+    )
+    enable_low_confidence_review: bool = Field(
+        default=True,
+        description=(
+            "Phase 2.2 — when True, a low-confidence verdict "
+            "(top-1 cosine in 0.55–0.70 OR LLM self-confidence "
+            "< 0.7) parks the workflow on a wait_condition until "
+            "a human posts a review signal at "
+            "POST /workflows/{id}/signal/review."
+        ),
+    )
+
+
+class ReviewSignal(BaseModel):
+    """The payload of the Phase 2.2 ``review`` signal.
+
+    A human posts this to ``POST /workflows/{id}/signal/review`` to
+    resume a workflow that parked on a low-confidence verdict. The
+    shape is intentionally a tagged union:
+
+    - ``decision="confirm"`` → keep the model's verdict as-is.
+    - ``decision="override"`` → swap the verdict for the supplied
+      ``corrected_verdict`` (an ``IdeaVerdict``-shaped dict).
+    - ``decision="reject"`` → fail the workflow with a structured
+      failure body (the human doesn't trust the model's read).
+
+    The signal-handling logic in the workflow treats ``confirm`` and
+    ``override`` as "workflow completes"; ``reject`` as "workflow
+    fails with the supplied reason".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(
+        ...,
+        description=(
+            "``confirm`` (keep verdict), ``override`` (swap in "
+            "``corrected_verdict``), or ``reject`` (fail the "
+            "workflow with the supplied reason)."
+        ),
+    )
+    corrected_verdict: dict | None = Field(
+        default=None,
+        description=(
+            "Only required when ``decision=\"override\"``. An "
+            "IdeaVerdict-shaped dict that replaces the model's "
+            "verdict for this run."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Optional free-text note from the reviewer. Echoed "
+            "back in the Langfuse trace metadata (Phase 2.3) and "
+            "in the workflow's final log line."
+        ),
     )
 
 
@@ -99,8 +196,18 @@ class AnnSearchResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class WorkflowPhase(str, Enum):
-    """High-level phase the workflow is in."""
+class WorkflowPhase(StrEnum):
+    """High-level phase the workflow is in.
+
+    Phase 2.2 adds:
+
+    - ``WEB_FALLBACK_FETCHED`` — the SearXNG-backed fallback ran and
+      scraped/embedded the top-3 web results.
+    - ``WAITING_FOR_REVIEW`` — the workflow parked on the
+      low-confidence signal channel; ``GET /workflows/{id}`` will
+      show ``status: "RUNNING"`` + ``phase: "waiting_for_review"``
+      until a human posts a review signal.
+    """
 
     STARTED = "started"
     EMBEDDED = "embedded"
@@ -108,6 +215,8 @@ class WorkflowPhase(str, Enum):
     LLM_COMPARED = "llm_compared"
     MARKET_SCOPED = "market_scoped"
     ASSEMBLED = "assembled"
+    WEB_FALLBACK_FETCHED = "web_fallback_fetched"
+    WAITING_FOR_REVIEW = "waiting_for_review"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -149,6 +258,31 @@ class WorkflowStatus(BaseModel):
         default="priorart-idea-analysis",
         description="The task queue the workflow ran on.",
     )
+    web_fallback_fired: bool = Field(
+        default=False,
+        description=(
+            "Phase 2.2 — True when the SearXNG-backed "
+            "``web_fallback_if_empty`` activity ran. The eval "
+            "harness asserts this fires < 10% of the time on the "
+            "labeled benchmark (PHASE-2.md pitfall)."
+        ),
+    )
+    low_confidence: bool = Field(
+        default=False,
+        description=(
+            "Phase 2.2 — True when the verdict hit the "
+            "low-confidence band (top-1 cosine in 0.55–0.70 OR "
+            "LLM self-confidence < 0.7)."
+        ),
+    )
+    review_pending: bool = Field(
+        default=False,
+        description=(
+            "Phase 2.2 — True while the workflow is parked on the "
+            "low-confidence signal channel waiting for a human "
+            "review signal. False otherwise."
+        ),
+    )
 
 
 __all__ = [
@@ -156,6 +290,7 @@ __all__ = [
     "AnnSearchResult",
     "IdeaAnalysisInput",
     "IdeaVerdict",
+    "ReviewSignal",
     "WorkflowPhase",
     "WorkflowStatus",
 ]

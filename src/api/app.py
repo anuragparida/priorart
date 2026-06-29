@@ -45,15 +45,17 @@ from src.api.search import (
 )
 from src.api.workflows import (
     AnalyzeStartResponse,
+    SignalReviewResponse,
     WorkflowStatusResponse,
     analyze_start_endpoint,
     workflow_result_endpoint,
+    workflow_signal_review_endpoint,
     workflow_status_endpoint,
 )
 from src.config import EMBEDDING_MODEL
 from src.data.models import CompanyEmbedding
 from src.observability.langfuse import init_langfuse, is_tracing_enabled
-from src.workflow.shared import IdeaAnalysisInput
+from src.workflow.shared import IdeaAnalysisInput, ReviewSignal
 
 # ---------------------------------------------------------------------------
 # App factory + lifespan (Phase 2.3 Langfuse init)
@@ -279,6 +281,9 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeStartResponse:
         idea=request.idea,
         top_k=request.top_k,
         request_id=None,
+        enable_web_fallback=request.enable_web_fallback,
+        web_fallback_threshold=request.web_fallback_threshold,
+        enable_low_confidence_review=request.enable_low_confidence_review,
     )
     return await analyze_start_endpoint(workflow_input)
 
@@ -360,3 +365,53 @@ async def workflows_result(workflow_id: str) -> dict:
     timeout-exceeded body. Callers parse ``status`` first.
     """
     return await workflow_result_endpoint(workflow_id)
+
+
+# ---------------------------------------------------------------------------
+# /workflows/{id}/signal/review route (Phase 2.2 — low-confidence channel)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/workflows/{workflow_id}/signal/review",
+    response_model=SignalReviewResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": (
+                "Signal delivered. The caller polls "
+                "``GET /workflows/{id}`` afterwards to observe the "
+                "workflow's terminal state (``COMPLETED`` for "
+                "``confirm`` / ``override``, ``FAILED`` for ``reject``)."
+            ),
+        },
+        404: {"description": "Unknown workflow id."},
+        422: {
+            "description": (
+                "Validation error (missing ``decision``, "
+                "``override`` without ``corrected_verdict``, etc.)."
+            ),
+        },
+        503: {"description": "Temporal is unreachable."},
+    },
+)
+async def workflows_signal_review(
+    workflow_id: str, signal: ReviewSignal
+) -> SignalReviewResponse:
+    """Send a review signal to a workflow parked on a low-confidence verdict.
+
+    PHASE-2.md §2.2 acceptance step 3:
+
+        Same novel idea → workflow parks; the status endpoint
+        shows "running (waiting for signal)".
+        curl -X POST http://localhost:18001/workflows/<id>/signal/review \\
+          -H "Content-Type: application/json" \\
+          -d '{"verdict": "<corrected>"}'
+        Workflow completes. /workflows/<id> shows "completed".
+
+    The body shape is a :class:`ReviewSignal` Pydantic model with
+    three branches: ``confirm`` (keep verdict), ``override``
+    (swap in ``corrected_verdict``), ``reject`` (fail the
+    workflow with a structured reason).
+    """
+    return await workflow_signal_review_endpoint(workflow_id, signal)

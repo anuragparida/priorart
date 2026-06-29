@@ -296,9 +296,18 @@ def client_with_empty_corpus(pg_engine):
 
 
 def test_analyze_request_field_set() -> None:
-    """``AnalyzeRequest`` exposes exactly the documented fields."""
+    """``AnalyzeRequest`` exposes the documented Phase 1.8 + Phase 2.2 fields."""
     fields = set(AnalyzeRequest.model_fields.keys())
-    assert fields == {"idea", "top_k"}
+    # Phase 2.2 added three opt-in flags. The test asserts the
+    # full documented surface; new fields must be added here
+    # explicitly so reviewers see them in the diff.
+    assert fields == {
+        "idea",
+        "top_k",
+        "enable_web_fallback",
+        "web_fallback_threshold",
+        "enable_low_confidence_review",
+    }
     assert AnalyzeRequest.model_fields["idea"].is_required()
     assert AnalyzeRequest.model_fields["top_k"].default == DEFAULT_TOP_K
     # top_k must be bounded by [1, MAX_TOP_K] — assert via JSON schema.
@@ -311,6 +320,11 @@ def test_analyze_request_field_set() -> None:
     idea = schema["properties"]["idea"]
     assert idea["minLength"] == 1
     assert idea["maxLength"] == 4096
+    # Phase 2.2 — web_fallback_threshold must be in [0.0, 1.0].
+    threshold = schema["properties"]["web_fallback_threshold"]
+    assert threshold["minimum"] == 0.0
+    assert threshold["maximum"] == 1.0
+    assert threshold["default"] == 0.7
 
 
 def test_analyze_error_field_set() -> None:

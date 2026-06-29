@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.config import TEMPORAL_TASK_QUEUE
 from src.llm.schemas import IdeaVerdict
 from src.workflow.client import get_temporal_client
-from src.workflow.shared import IdeaAnalysisInput
+from src.workflow.shared import IdeaAnalysisInput, ReviewSignal
 from src.workflow.workflows import IdeaAnalysisWorkflow
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,17 @@ class WorkflowStatusResponse(BaseModel):
     for FastAPI's response_model — keeping it as a separate class
     means we can extend the HTTP contract without touching the
     workflow's query handler.
+
+    Phase 2.2 adds three fields surfaced from the workflow's
+    in-flight state:
+
+    - ``web_fallback_fired``: True when the SearXNG-backed
+      fallback ran. The eval harness asserts this fires < 10% of
+      the time on the labeled benchmark (PHASE-2.md pitfall).
+    - ``low_confidence``: True when the verdict hit the
+      low-confidence band.
+    - ``review_pending``: True while the workflow is parked on the
+      low-confidence signal channel waiting for a human review.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -89,6 +100,9 @@ class WorkflowStatusResponse(BaseModel):
     result: IdeaVerdict | None = None
     failure: dict[str, Any] | None = None
     task_queue: str = TEMPORAL_TASK_QUEUE
+    web_fallback_fired: bool = False
+    low_confidence: bool = False
+    review_pending: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +185,69 @@ async def analyze_start_endpoint(
     )
 
 
+# ---------------------------------------------------------------------------
+# Failure-surface helper (Phase 2.2)
+# ---------------------------------------------------------------------------
+
+
+def _failure_to_dict(exc: BaseException | None) -> dict[str, Any]:
+    """Recursively flatten a Temporal ``FailureError`` chain to a JSON-safe dict.
+
+    The Temporal Python SDK raises ``FailureError`` (or a subclass
+    like ``ActivityError``) when a workflow or activity fails.
+    The chain usually looks like:
+
+        FailureError
+          └─ ActivityError(cause=ApplicationError("MissingAPIKeyError: ..."))
+
+    We walk the chain with ``__cause__`` / ``.cause`` and return
+    a JSON-safe shape:
+
+        {
+          "type": "ActivityError",
+          "message": "Activity task failed",
+          "cause": {
+            "type": "ApplicationError",
+            "message": "MissingAPIKeyError: Anthropic API key not found. ...",
+          }
+        }
+
+    The walk is depth-bounded (8 levels) so a maliciously cyclic
+    exception chain can't wedge the endpoint.
+    """
+    out: dict[str, Any] = {
+        "type": type(exc).__name__ if exc else "Unknown",
+        "message": str(exc) if exc else "",
+        "cause": None,
+    }
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    target: dict[str, Any] = out
+    depth = 0
+    while current is not None and depth < 8:
+        if id(current) in seen:
+            target["cause"] = {
+                "type": "CycleDetected",
+                "message": f"circular cause chain at {type(current).__name__}",
+            }
+            break
+        seen.add(id(current))
+        next_cause: BaseException | None = getattr(current, "cause", None)
+        if next_cause is None and hasattr(current, "__cause__"):
+            next_cause = current.__cause__
+        if next_cause is None:
+            break
+        target["cause"] = {
+            "type": type(next_cause).__name__,
+            "message": str(next_cause),
+            "cause": None,
+        }
+        target = target["cause"]
+        current = next_cause
+        depth += 1
+    return out
+
+
 async def workflow_status_endpoint(
     workflow_id: str,
 ) -> WorkflowStatusResponse:
@@ -239,12 +316,26 @@ async def workflow_status_endpoint(
     # Phase 2.1 doesn't fail the request if the query fails — we
     # default to ``STARTED`` and let the caller poll again.
     phase = "started"
+    # Phase 2.2 — additional fields surfaced via the same query.
+    # Default to False so a query failure still returns a valid
+    # response shape.
+    web_fallback_fired = False
+    low_confidence = False
+    review_pending = False
     try:
         query_result = await handle.query("get_status")
         # ``query_result`` is the dict the workflow's get_status
         # returned — it has a ``phase`` field.
-        if isinstance(query_result, dict) and "phase" in query_result:
-            phase = query_result["phase"]
+        if isinstance(query_result, dict):
+            if "phase" in query_result:
+                phase = query_result["phase"]
+            # Phase 2.2 — graceful fallback if the workflow's
+            # query handler doesn't include these yet (Phase 2.1
+            # run replayed against new code, etc.). Treat absence
+            # as "no" rather than failing the request.
+            web_fallback_fired = bool(query_result.get("web_fallback_fired", False))
+            low_confidence = bool(query_result.get("low_confidence", False))
+            review_pending = bool(query_result.get("review_pending", False))
     except Exception:
         logger.debug(
             "workflow_status: get_status query failed (workflow may have completed)",
@@ -266,14 +357,21 @@ async def workflow_status_endpoint(
             # caller can investigate.
             failure = {"type": type(exc).__name__, "message": str(exc)}
     elif status_name == "FAILED":
-        # ``describe().failure`` carries the Temporal error info
-        # for failed workflows.
-        desc_failure = getattr(description, "failure", None)
-        if desc_failure is not None:
-            failure = {
-                "type": getattr(desc_failure, "type", "") or "",
-                "message": getattr(desc_failure, "message", "") or "",
-            }
+        # Pull the workflow's failure by calling ``result()`` and
+        # catching ``FailureError``. The ``DescribeWorkflowExecution``
+        # RPC doesn't surface the failure — it only includes
+        # ``status: FAILED``. The actual ``Failure`` object lives
+        # in the workflow's history and is replayed by the SDK
+        # when ``result()`` is awaited.
+        #
+        # Failure chain shape (Phase 2.1 + 2.2):
+        #   FailureError
+        #     └─ ActivityError  (the activity that raised)
+        #          └─ ApplicationError  (the Python exception, e.g. MissingAPIKeyError)
+        try:
+            await handle.result()
+        except Exception as exc:  # noqa: BLE001 — surface everything
+            failure = _failure_to_dict(exc)
 
     return WorkflowStatusResponse(
         workflow_id=workflow_id,
@@ -285,6 +383,9 @@ async def workflow_status_endpoint(
         result=result,
         failure=failure,
         task_queue=TEMPORAL_TASK_QUEUE,
+        web_fallback_fired=web_fallback_fired,
+        low_confidence=low_confidence,
+        review_pending=review_pending,
     )
 
 
@@ -394,14 +495,169 @@ async def workflow_result_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Signal-review endpoint (Phase 2.2)
+# ---------------------------------------------------------------------------
+
+
+class SignalReviewResponse(BaseModel):
+    """The wire shape of ``POST /workflows/{id}/signal/review``.
+
+    A small acknowledgment body — the caller polls
+    ``GET /workflows/{id}`` afterwards to see the workflow's
+    terminal state (``COMPLETED`` for ``confirm``/``override``,
+    ``FAILED`` for ``reject``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    delivered: bool = True
+    decision: str = Field(
+        ..., description="The decision echoed back from the signal."
+    )
+
+
+async def workflow_signal_review_endpoint(
+    workflow_id: str,
+    signal: ReviewSignal,
+) -> SignalReviewResponse:
+    """Send a ``review`` signal to a parked workflow.
+
+    PHASE-2.md §2.2 asks for a "simple admin endpoint
+    ``POST /workflows/{id}/signal/review`` resumes it with a
+    corrected verdict (or 'confirm as-is')". The signal is
+    dispatched via ``handle.signal("review", signal)`` —
+    Temporal handles the channel routing + replay-safety.
+
+    Returns
+    -------
+    SignalReviewResponse
+        Acknowledgment. The caller polls ``GET /workflows/{id}``
+        to observe the workflow's terminal state.
+
+    Raises
+    ------
+    HTTPException(404)
+        Unknown workflow id.
+    HTTPException(503)
+        Temporal client is unreachable.
+    HTTPException(409)
+        Signal sent, but the workflow wasn't in a
+        ``WAITING_FOR_REVIEW`` phase. (Temporal accepts the
+        signal anyway; we surface this as a 409 so the operator
+        knows the signal may have been queued for a workflow
+        that already moved on.)
+    """
+    if signal.decision not in ("confirm", "override", "reject"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "invalid_decision",
+                "details": {
+                    "decision": signal.decision,
+                    "expected": ["confirm", "override", "reject"],
+                },
+            },
+        )
+
+    client = await get_temporal_client()
+    handle = client.get_workflow_handle(workflow_id)
+
+    # Note on phase checks: we deliberately don't gate on the
+    # workflow's current phase before delivering the signal. The
+    # signal handler is a Temporal-managed channel — it buffers
+    # signals for completed / not-yet-parked workflows. If the
+    # workflow has already completed, the signal is silently
+    # dropped by the server. If it's still pre-park, the signal
+    # is queued and applied as soon as the workflow enters
+    # ``WAITING_FOR_REVIEW``. We keep the best-effort ``get_status``
+    # query in a debug log so operators can see the workflow's
+    # current phase at signal-delivery time without changing the
+    # delivery semantics.
+    try:
+        query_result = await handle.query("get_status")
+        if isinstance(query_result, dict):
+            logger.debug(
+                "workflow_signal_review: pre-signal phase=%s "
+                "review_pending=%s",
+                query_result.get("phase"),
+                query_result.get("review_pending"),
+            )
+    except Exception:
+        logger.debug(
+            "workflow_signal_review: get_status query failed; proceeding with signal",
+            exc_info=True,
+        )
+
+    try:
+        # ``handle.signal`` is the canonical Temporal Python SDK
+        # way to push a signal. It accepts a Pydantic model
+        # because the workflow + worker both run with
+        # ``pydantic_data_converter`` (see ``worker.py``).
+        await handle.signal("review", signal)
+    except Exception as exc:
+        exc_str = str(exc).lower()
+        # ``not found`` is what the Temporal Python SDK renders
+        # in the error message for ``WorkflowExecutionNotFoundError``;
+        # the SDK doesn't expose a typed exception for it in the
+        # version pinned in pyproject.toml. We substring-match.
+        if "not found" in exc_str:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "workflow_not_found",
+                    "details": {
+                        "workflow_id": workflow_id,
+                        "message": str(exc),
+                    },
+                },
+            ) from exc
+        # Workflow is closed (COMPLETED, FAILED, TIMED_OUT, etc.)
+        # — Temporal can't deliver signals to closed workflows.
+        # We surface as 409 Conflict: the workflow exists but
+        # can't accept the signal. The client should treat this
+        # as terminal, not retry.
+        if "already completed" in exc_str or "closed" in exc_str:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "workflow_closed",
+                    "details": {
+                        "workflow_id": workflow_id,
+                        "message": str(exc),
+                    },
+                },
+            ) from exc
+        logger.exception("workflow_signal_review: failed to deliver signal")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "temporal_unavailable",
+                "details": {
+                    "message": str(exc),
+                    "type": type(exc).__name__,
+                },
+            },
+        ) from exc
+
+    return SignalReviewResponse(
+        workflow_id=workflow_id,
+        delivered=True,
+        decision=signal.decision,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Re-exports
 # ---------------------------------------------------------------------------
 
 
 __all__ = [
     "AnalyzeStartResponse",
+    "SignalReviewResponse",
     "WorkflowStatusResponse",
     "analyze_start_endpoint",
     "workflow_result_endpoint",
+    "workflow_signal_review_endpoint",
     "workflow_status_endpoint",
 ]

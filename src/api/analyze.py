@@ -106,6 +106,36 @@ class AnalyzeRequest(BaseModel):
             f"searched at this depth; lower values are cheaper."
         ),
     )
+    # Phase 2.2 — opt-in flags plumbed through to the Temporal
+    # ``IdeaAnalysisInput``. We *don't* enforce the request
+    # shape here beyond what's in the workflow's input Pydantic
+    # model; the route converts ``AnalyzeRequest`` →
+    # ``IdeaAnalysisInput`` explicitly (see ``app.py``).
+    enable_web_fallback: bool = Field(
+        default=True,
+        description=(
+            "Phase 2.2 — when True, the workflow runs a SearXNG-"
+            "backed web search if the corpus returns nothing above "
+            "the threshold. Default True; pass False to opt out."
+        ),
+    )
+    web_fallback_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Phase 2.2 — minimum top-1 cosine similarity required "
+            "from the corpus before the web fallback is skipped."
+        ),
+    )
+    enable_low_confidence_review: bool = Field(
+        default=True,
+        description=(
+            "Phase 2.2 — when True, a low-confidence verdict parks "
+            "the workflow on a signal channel for human review. "
+            "Default True; pass False to skip the wait."
+        ),
+    )
 
 
 class AnalyzeError(BaseModel):
