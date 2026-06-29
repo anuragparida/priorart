@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0.0",
+  "source_url": "https://www.producthunt.com/leaderboard/daily",
+  "scrape_date": "2026-06-29",
+  "count": 4708,
+  "date_range": {
+    "oldest_post": "2023-01-01T00:01:00-08:00",
+    "newest_post": "2026-06-27T00:01:00-07:00",
+    "search_window": [
+      "2023-06-30",
+      "2026-06-29"
+    ]
+  },
+  "lookback_days": 1095,
+  "max_records_cap": 5000,
+  "votes_floor": 50,
+  "wayback": {
+    "cdx_dates_scanned": 1114,
+    "cdx_dates_fetched": 1108,
+    "cdx_dates_failed": 6
+  },
+  "raw_hits_yielded": 13761,
+  "dedup_stats": {
+    "cdx_dates_scanned": 1114,
+    "cdx_dates_fetched": 1108,
+    "cdx_dates_failed": 6,
+    "raw_hits_yielded": 13761,
+    "exact_dup_count": 292,
+    "borderline_count": 956,
+    "novel_count": 3752,
+    "max_cosine_mean": 0.7045843005180359,
+    "max_cosine_median": 0.6945728063583374
+  },
+  "borderline_band": "[0.75, 0.85)",
+  "borderline_count": 956,
+  "borderline_path": "producthunt_2026-06-29.borderline.jsonl",
+  "embedding_model": "BAAI/bge-m3",
+  "scraped_at_utc": "2026-06-29T10:49:38Z",
+  "snapshot_filename": "producthunt_2026-06-29.jsonl"
+}
