@@ -371,3 +371,41 @@ mlflow-reset: ## DESTRUCTIVE — drop the MLflow SQLite DB + artifact store. Req
 	@echo "All MLflow experiments / runs / artifacts will be lost."
 	@read -p "Continue? (type 'yes' to proceed) " answer && [ "$$answer" = "yes" ] || { echo "aborted"; exit 1; }
 	docker compose down -v mlflow
+# ---------------------------------------------------------------------------
+# Phase 2.7 — corpus build (merge + dedup + ingest + HNSW rebuild)
+# ---------------------------------------------------------------------------
+#
+# Reads the latest snapshot per source under data/snapshots/:
+#   - yc_<date>.jsonl
+#   - producthunt_<date>.jsonl
+#   - hn_show_<date>.jsonl
+#
+# Then: runs the schema migration, loads + normalises each source,
+# cross-source dedups by name cosine ≥ 0.85 (bge-m3), upserts the
+# merged companies, embeds + upserts the bge-m3 vectors, and writes
+# a manifest at data/snapshots/corpus_<date>.manifest.json.
+#
+# Idempotent — re-running with the same inputs is a no-op on both
+# the companies and the embeddings tables.
+
+CORPUS_DATE ?= $(shell date -u +%Y-%m-%d)
+CORPUS_THRESHOLD ?= 0.85
+
+.PHONY: corpus-build
+corpus-build: ## Phase 2.7 — merge YC + PH + HN, dedup by name cosine ≥ 0.85, rebuild HNSW. Idempotent.
+	$(PY) -m src.data.corpus_build \
+		--snapshots-dir data/snapshots \
+		--out-manifest data/snapshots/corpus_$(CORPUS_DATE).manifest.json \
+		--threshold $(CORPUS_THRESHOLD)
+
+.PHONY: corpus-build-smoke
+corpus-build-smoke: ## Phase 2.7 smoke — same as corpus-build but skips the bge-m3 embed (CI / quick check).
+	$(PY) -m src.data.corpus_build \
+		--snapshots-dir data/snapshots \
+		--no-embed \
+		--out-manifest data/snapshots/corpus_smoke.manifest.json \
+		--threshold $(CORPUS_THRESHOLD)
+
+.PHONY: migrate
+migrate: ## Phase 2.7 — run the schema migrations only (idempotent).
+	$(PY) -m src.data.migrate

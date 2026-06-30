@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0.0",
+  "scraped_at_utc": "2026-06-30T18:07:55Z",
+  "embedding_model": "BAAI/bge-m3",
+  "embedding_dim": 1024,
+  "dedup_threshold": 0.85,
+  "source_files": {
+    "yc": {
+      "path": "yc_2026-06-08.jsonl",
+      "snapshot_date": "2026-06-08",
+      "records": 5949
+    },
+    "producthunt": {
+      "path": "producthunt_2026-06-29.jsonl",
+      "snapshot_date": "2026-06-29",
+      "records": 4000
+    },
+    "hn": {
+      "path": "hn_show_2026-06-29.jsonl",
+      "snapshot_date": "2026-06-29",
+      "records": 1000
+    }
+  },
+  "sources": {
+    "yc": {
+      "records_in": 5949,
+      "dropped_dedup": 4,
+      "kept": 5949,
+      "embedded": 0
+    },
+    "producthunt": {
+      "records_in": 4000,
+      "dropped_dedup": 5,
+      "kept": 4000,
+      "embedded": 0
+    },
+    "hn": {
+      "records_in": 1000,
+      "dropped_dedup": 9,
+      "kept": 991,
+      "embedded": 991
+    }
+  },
+  "totals": {
+    "records_in": 10949,
+    "kept": 10940,
+    "dropped_dedup": 18,
+    "embedded": 991
+  },
+  "collisions_sample": [
+    {
+      "kept": {
+        "source": "producthunt",
+        "external_id": "Tender",
+        "name": "Tender"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "44664873",
+        "name": "Tinder but it's only pictures of my wife and I can only swipe right"
+      }
+    },
+    {
+      "kept": {
+        "source": "producthunt",
+        "external_id": "Draw A Fish",
+        "name": "Draw A Fish"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "44719222",
+        "name": "Draw a fish and watch it swim with the others"
+      }
+    },
+    {
+      "kept": {
+        "source": "producthunt",
+        "external_id": "Documenso",
+        "name": "Documenso"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "38052344",
+        "name": "OpenSign \u2013 Open source alternative to DocuSign"
+      }
+    },
+    {
+      "kept": {
+        "source": "yc",
+        "external_id": "Vocode",
+        "name": "Vocode"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "40345696",
+        "name": "An open source framework for voice assistants"
+      }
+    },
+    {
+      "kept": {
+        "source": "producthunt",
+        "external_id": "Bugdrop",
+        "name": "Bugdrop"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "44225352",
+        "name": "Most users won't report bugs unless you make it stupidly easy"
+      }
+    },
+    {
+      "kept": {
+        "source": "yc",
+        "external_id": "Toko",
+        "name": "Toko"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "36973400",
+        "name": "Learn a language quickly by practising speaking with AI"
+      }
+    },
+    {
+      "kept": {
+        "source": "yc",
+        "external_id": "Requestly",
+        "name": "Requestly"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "37393099",
+        "name": "Open-source Postman alternative with type safety"
+      }
+    },
+    {
+      "kept": {
+        "source": "yc",
+        "external_id": "OpenWork",
+        "name": "OpenWork"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "46612494",
+        "name": "OpenWork \u2013 An open-source alternative to Claude Cowork"
+      }
+    },
+    {
+      "kept": {
+        "source": "producthunt",
+        "external_id": "GitDiagram",
+        "name": "GitDiagram"
+      },
+      "dropped": {
+        "source": "hn",
+        "external_id": "42521769",
+        "name": "Instantly visualize any codebase as an interactive diagram"
+      }
+    }
+  ],
+  "collision_count": 9,
+  "snapshot_filename": "corpus_2026-06-30.manifest.json"
+}

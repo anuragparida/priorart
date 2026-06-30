@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0.0",
+  "scraped_at_utc": "2026-06-29T12:06:03Z",
+  "embedding_model": "skipped",
+  "embedding_dim": 1024,
+  "dedup_threshold": 0.85,
+  "source_files": {
+    "yc": {
+      "path": "yc_2026-06-08.jsonl",
+      "records": 5949,
+      "snapshot_date": "2026-06-08"
+    },
+    "producthunt": {
+      "path": "producthunt_2026-06-29.jsonl",
+      "records": 4708,
+      "snapshot_date": "2026-06-29"
+    },
+    "hn": {
+      "path": "hn_show_2026-06-29.jsonl",
+      "records": 1000,
+      "snapshot_date": "2026-06-29"
+    }
+  },
+  "sources": {
+    "yc": {
+      "records_in": 5949,
+      "dropped_dedup": 0,
+      "kept": 5949,
+      "embedded": 0
+    },
+    "producthunt": {
+      "records_in": 4708,
+      "dropped_dedup": 0,
+      "kept": 4708,
+      "embedded": 0
+    },
+    "hn": {
+      "records_in": 1000,
+      "dropped_dedup": 0,
+      "kept": 1000,
+      "embedded": 0
+    }
+  },
+  "totals": {
+    "records_in": 11657,
+    "kept": 11657,
+    "dropped_dedup": 0,
+    "embedded": 0
+  },
+  "collisions_sample": [],
+  "collision_count": 0,
+  "snapshot_filename": "corpus_smoke.manifest.json"
+}

@@ -132,9 +132,17 @@ def check_healthz(api_url: str) -> None:
         _fail(f"GET /healthz status != 'ok' (got {body.get('status')!r}, full body={body!r})")
     if "db" not in body or "model" not in body or "corpus_count" not in body:
         _fail(f"GET /healthz missing required keys (db/model/corpus_count): body={body!r}")
+    # Phase 2.7 — the merged corpus carries a per-source breakdown.
+    # On a fresh build the breakdown is ``{"yc": ..., "producthunt": ...,
+    # "hn": ...}``; on a pre-migration schema it's ``{}``. We accept
+    # both, but the merged case has a non-trivial yc count.
+    sources = body.get("sources") or {}
+    if sources and not isinstance(sources, dict):
+        _fail(f"GET /healthz 'sources' is not an object: {sources!r}")
     print(
         f"  /healthz     ✓ HTTP 200, status={body['status']}, "
-        f"db={body['db']}, model={body['model']}, corpus_count={body['corpus_count']}"
+        f"db={body['db']}, model={body['model']}, corpus_count={body['corpus_count']}, "
+        f"sources={sources}"
     )
 
 

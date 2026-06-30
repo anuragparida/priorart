@@ -118,6 +118,10 @@ class HealthStatus(BaseModel):
     db: str
     model: str
     corpus_count: int | None  # None only when the table is missing or unreadable
+    # Phase 2.7 — per-source row count from the merged corpus.
+    # Empty dict when the schema hasn't been migrated yet (so the
+    # field is additive — old clients ignore it).
+    sources: dict[str, int] = {}
     # Phase 2.3 — Langfuse tracing status. ``True`` when real keys are
     # configured + the SDK authenticates against the self-hosted server;
     # ``False`` when keys are missing/placeholder or the SDK failed to
@@ -146,6 +150,25 @@ def _count_corpus(engine: Engine) -> int | None:
         return None
 
 
+def _sources_breakdown(engine: Engine) -> dict[str, int]:
+    """Per-source row count in ``companies``.
+
+    Phase 2.7 — the merged corpus is now multi-source (yc /
+    producthunt / hn). The breakdown lets operators confirm the
+    merge ran cleanly without opening psql. Returns ``{}`` on a
+    pre-migration table or unreachable DB (the caller treats that
+    the same as corpus_count=None).
+    """
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT source, count(*) FROM companies GROUP BY source")
+            ).fetchall()
+            return {str(r[0]): int(r[1]) for r in rows}
+    except SQLAlchemyError:
+        return {}
+
+
 @app.get("/healthz", response_model=HealthStatus, status_code=status.HTTP_200_OK)
 def healthz(engine: EngineDep) -> HealthStatus:
     """Liveness + dependency check.
@@ -153,14 +176,17 @@ def healthz(engine: EngineDep) -> HealthStatus:
     Returns 200 only when postgres is reachable. ``corpus_count`` is
     the row count of ``company_embeddings`` — the number of embedded
     chunks in the index. ``None`` means the table doesn't exist yet
-    (run the ingest pipeline).
+    (run the ingest pipeline). ``sources`` breaks down the per-source
+    company-row count from the merged corpus (Phase 2.7).
     """
     db_status = "ok"
     corpus_count: int | None = None
+    sources: dict[str, int] = {}
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         corpus_count = _count_corpus(engine)
+        sources = _sources_breakdown(engine)
     except SQLAlchemyError:
         db_status = "down"
 
@@ -171,6 +197,7 @@ def healthz(engine: EngineDep) -> HealthStatus:
         db=db_status,
         model=EMBEDDING_MODEL,
         corpus_count=corpus_count,
+        sources=sources,
         langfuse_enabled=is_tracing_enabled(),
     )
 

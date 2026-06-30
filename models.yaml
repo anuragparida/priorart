@@ -1,0 +1,54 @@
+# PriorArt model registry — Phase 2.7 (docs/PHASE-2.md §2.7)
+#
+# Single source of truth for the operator: which embedding model is
+# live, which LLM is wired into the analyzer, which corpus snapshots
+# are currently ingested, and which retrieval configs are evaluated
+# against the labeled benchmark. The eval harness and the API both
+# read this file indirectly (via ``src.config`` for model + dim,
+# via ``configs/*.yaml`` for retrieval configs); the corpus
+# snapshot dates + per-source counts are the only fields that live
+# exclusively here.
+
+# Pinned by Phase 1.3 — the CV line is "pgvector + bge-m3 retrieval",
+# so the version is part of the public claim.
+embedding_model: BAAI/bge-m3
+embedding_dim: 1024
+
+# Phase 1.7 — the analyzer's structured-comparison call. Falls back
+# to a structured-abstention body when ANTHROPIC_API_KEY is missing.
+llm_model: claude-sonnet-4-5
+
+# Per-source corpus snapshots — Phase 2.7 merged three sources into
+# one table. ``snapshot_date`` is the date the JSONL was written
+# (not when the row landed in Postgres); ``count`` is the per-source
+# row count after the cross-source cosine dedup (≥ 0.85). The
+# ``make corpus-build`` target refreshes this section automatically.
+corpus:
+  yc:
+    snapshot_date: "2026-06-08"
+    snapshot_path: data/snapshots/yc_2026-06-08.jsonl
+    count: 5949
+    source_url: https://www.ycombinator.com/companies
+  producthunt:
+    snapshot_date: "2026-06-29"
+    snapshot_path: data/snapshots/producthunt_2026-06-29.jsonl
+    count: 3752  # post Phase-2.5 dedup vs YC; refresh from data/snapshots/producthunt_*.manifest.json
+    source_url: https://web.archive.org/web/2026*/https://www.producthunt.com/leaderboard/daily
+  hn:
+    snapshot_date: "2026-06-29"
+    snapshot_path: data/snapshots/hn_show_2026-06-29.jsonl
+    count: 1000
+    source_url: https://hn.algolia.com/api/v1/search
+
+# The merged manifest — produced by ``make corpus-build``. Listed
+# here so operators can find it from this one file.
+manifest:
+  path: data/snapshots/corpus_2026-06-29.manifest.json
+  schema_version: "1.0.0"
+
+# Dedup configuration. The cross-source cosine threshold (≥ 0.85 on
+# bge-m3 name embeddings) matches the Phase 2.5 PH-vs-YC threshold
+# so the boundary is consistent across the whole pipeline.
+dedup:
+  cross_source_cosine_threshold: 0.85
+  source_precedence: [yc, producthunt, hn]

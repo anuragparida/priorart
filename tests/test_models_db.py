@@ -20,7 +20,9 @@ from src.data.models import Company, CompanyEmbedding, HNSW_INDEX_SQL
 def test_company_table_created_with_expected_columns(pg_session: Session) -> None:
     inspector = inspect(pg_session.bind)
     cols = {c["name"]: c for c in inspector.get_columns("companies")}
-    for name in ("id", "name", "description", "batch", "status", "url", "tags", "source", "snapshot_date"):
+    # Phase 2.7 — added ``external_id`` and changed ``source`` to a
+    # plain prefix (``yc`` / ``producthunt`` / ``hn``).
+    for name in ("id", "name", "description", "batch", "status", "url", "tags", "source", "external_id", "snapshot_date"):
         assert name in cols, f"missing column companies.{name}"
 
 
@@ -40,7 +42,8 @@ def test_company_embedding_id_is_autoincrement(pg_session: Session) -> None:
         status="Active",
         url="",
         tags=[],
-        source="yc:2026-06-08",
+        source="yc",
+        external_id="https://example.com/acme",
         snapshot_date=date(2026, 6, 8),
     )
     pg_session.add(company)
@@ -83,7 +86,8 @@ def test_hnsw_index_present_on_embedding_column(pg_session: Session) -> None:
         assert rows, f"no HNSW index found; indexes={indexes}"
 
 
-def test_company_unique_constraint_name_batch(pg_session: Session) -> None:
+def test_company_unique_constraint_source_external_id(pg_session: Session) -> None:
+    """Phase 2.7 — dedup key is ``(source, external_id)``, not ``(name, batch)``."""
     company = Company(
         name="Acme",
         description="d",
@@ -91,7 +95,8 @@ def test_company_unique_constraint_name_batch(pg_session: Session) -> None:
         status="Active",
         url="https://example.com",
         tags=["AI"],
-        source="yc:2026-06-08",
+        source="yc",
+        external_id="https://example.com/acme",
         snapshot_date=date(2026, 6, 8),
     )
     pg_session.add(company)
@@ -99,21 +104,58 @@ def test_company_unique_constraint_name_batch(pg_session: Session) -> None:
     pg_session.refresh(company)
     assert company.id is not None
 
-    # Re-adding the same (name, batch) hits the unique constraint.
+    # Re-adding the same (source, external_id) hits the unique constraint.
     dup = Company(
-        name="Acme",
+        name="Acme Different Name",  # name can differ — only the source key matters
         description="different",
-        batch="W21",
+        batch="W22",  # batch can differ too
         status="Active",
         url="",
         tags=[],
-        source="yc:2026-06-08",
+        source="yc",
+        external_id="https://example.com/acme",  # same external_id → dup
         snapshot_date=date(2026, 6, 8),
     )
     pg_session.add(dup)
     with pytest.raises(IntegrityError):
         pg_session.commit()
     pg_session.rollback()
+
+
+def test_company_cross_source_dedup_allowed(pg_session: Session) -> None:
+    """Same external_id but different sources is allowed — they live in
+    different dedup buckets (the cross-source name-cosine is the
+    application-level concern; the (source, external_id) unique key
+    only enforces per-source uniqueness)."""
+    a = Company(
+        name="Acme",
+        description="d",
+        batch="W21",
+        status="Active",
+        url="https://example.com",
+        tags=[],
+        source="yc",
+        external_id="acme",
+        snapshot_date=date(2026, 6, 8),
+    )
+    b = Company(
+        name="Acme",
+        description="d",
+        batch="PH 2024",
+        status="Active",
+        url="https://producthunt.com/posts/acme",
+        tags=[],
+        source="producthunt",
+        external_id="acme",
+        snapshot_date=date(2026, 6, 29),
+    )
+    pg_session.add_all([a, b])
+    pg_session.commit()
+    pg_session.refresh(a)
+    pg_session.refresh(b)
+    assert a.id != b.id
+    assert a.source == "yc"
+    assert b.source == "producthunt"
 
 
 def test_embedding_roundtrip_preserves_vector(pg_session: Session) -> None:
@@ -124,7 +166,8 @@ def test_embedding_roundtrip_preserves_vector(pg_session: Session) -> None:
         status="Active",
         url="",
         tags=[],
-        source="yc:2026-06-08",
+        source="yc",
+        external_id="https://example.com/acme-roundtrip",
         snapshot_date=date(2026, 6, 8),
     )
     pg_session.add(company)

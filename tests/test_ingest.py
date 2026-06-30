@@ -73,7 +73,10 @@ def _make_records(n: int = 3) -> List[CompanyRecord]:
             status="Active",
             url=f"https://example.com/{i}",
             tags=["SaaS", "Fintech"],
-            source="yc:2026-06-08",
+            # Phase 2.7 — source is the prefix, external_id is the
+            # YC url (the canonical directory slug).
+            source="yc",
+            external_id=f"https://example.com/{i}",
             snapshot_date=date(2026, 6, 8),
         )
         for i in range(n)
@@ -155,7 +158,8 @@ def test_ingest_with_multi_chunk_description(pg_session: Session) -> None:
             status="Active",
             url="",
             tags=[],
-            source="yc:2026-06-08",
+            source="yc",
+            external_id="bigco-test",
             snapshot_date=date(2026, 6, 8),
         )
     ]
@@ -185,7 +189,8 @@ def test_ingest_handles_empty_descriptions(pg_session: Session) -> None:
             status="Active",
             url="",
             tags=[],
-            source="yc:2026-06-08",
+            source="yc",
+            external_id="nodesc-test",
             snapshot_date=date(2026, 6, 8),
         )
     ]

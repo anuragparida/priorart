@@ -174,10 +174,12 @@ def _ingest_with_per_text_embedder(
                 url=rec.url,
                 tags=rec.tags,
                 source=rec.source,
+                external_id=rec.external_id,
                 snapshot_date=rec.snapshot_date,
             )
             .on_conflict_do_update(
-                index_elements=["name", "batch"],
+                # Phase 2.7 — dedup key is (source, external_id).
+                index_elements=["source", "external_id"],
                 set_={"description": rec.description},
             )
         )
@@ -186,8 +188,11 @@ def _ingest_with_per_text_embedder(
     for rec in records:
         company_id = int(
             session.execute(
-                text("SELECT id FROM companies WHERE name = :n AND batch = :b"),
-                {"n": rec.name, "b": rec.batch},
+                text(
+                    "SELECT id FROM companies "
+                    "WHERE source = :s AND external_id = :eid"
+                ),
+                {"s": rec.source, "eid": rec.external_id},
             ).scalar_one()
         )
         vec = embedder.embed_one(rec.description)
@@ -238,7 +243,8 @@ def client_with_indexed_corpus(pg_engine):
                 status="Active",
                 url="",
                 tags=["AI", "LegalTech"],
-                source="yc:test",
+                source="yc",
+                external_id="alpha-test",
                 snapshot_date=date(2026, 6, 8),
             ),
             CompanyRecord(
@@ -248,7 +254,8 @@ def client_with_indexed_corpus(pg_engine):
                 status="Active",
                 url="",
                 tags=["SaaS", "CRM"],
-                source="yc:test",
+                source="yc",
+                external_id="beta-test",
                 snapshot_date=date(2026, 6, 8),
             ),
             CompanyRecord(
@@ -258,7 +265,8 @@ def client_with_indexed_corpus(pg_engine):
                 status="Active",
                 url="",
                 tags=["Marketplace"],
-                source="yc:test",
+                source="yc",
+                external_id="gamma-test",
                 snapshot_date=date(2026, 6, 8),
             ),
         ]

@@ -79,12 +79,26 @@ class Base(DeclarativeBase):
 
 
 class Company(Base):
-    """One YC company (or future PH / HN company) per row.
+    """One company (YC / Product Hunt / HN) per row.
 
-    The YC scraper writes one of these per line of the JSONL snapshot.
-    Idempotent re-ingest is handled at the application layer via
-    ``INSERT ... ON CONFLICT (name, batch) DO UPDATE`` so the same
-    snapshot run produces the same ids.
+    Phase 2.7 (docs/PHASE-2.md §2.7) added three sources — ``yc``,
+    ``producthunt``, ``hn`` — and switched the dedup key from
+    ``(name, batch)`` to ``(source, external_id)`` so cross-source
+    dedup works.
+
+    Why ``(source, external_id)`` and not ``name``
+    -----------------------------------------------
+    PH and HN companies have no YC-style batch; some YC names collide
+    with PH launches ("Dora AI (Alpha)" on PH is a different product
+    than "Dora" on YC) so ``name`` is not a stable key. Each source
+    has a natural primary key we can use:
+
+    - ``yc``          → ``url`` (the canonical YC directory slug)
+    - ``producthunt`` → ``id`` (PH's integer-as-string id)
+    - ``hn``          → ``object_id`` (Algolia's per-post id)
+
+    The idempotency contract is then ``INSERT ... ON CONFLICT (source,
+    external_id) DO UPDATE`` — re-running the same JSONL is a no-op.
     """
 
     __tablename__ = "companies"
@@ -93,19 +107,29 @@ class Company(Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    batch: Mapped[str] = mapped_column(String(64), nullable=False)
+    # ``batch`` is YC-only in practice; for PH/HN it's the launch
+    # year/period (e.g. "PH 2024", "HN 2025") so the column stays
+    # meaningful across all three sources. Nullable so future sources
+    # can omit it.
+    batch: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="Unknown")
     url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(String(64)), nullable=False, default=list
     )
 
-    # Provenance: where this row came from and on which date.
-    # Stored as plain text — e.g. "yc:2026-06-08". The phase 1 scraper
-    # is the only writer in Phase 1; later phases will add "ph:..." and
-    # "hn:..." prefixes.
-    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Provenance — Phase 2.7 changed the format from "yc:2026-06-08"
+    # to just the source prefix ("yc" / "producthunt" / "hn"). The
+    # scrape date lives in ``snapshot_date``. Existing rows were
+    # backfilled by ``src.data.migrate``.
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # The source's natural primary key (YC url, PH id, HN object_id).
+    # Nullable so the schema can be created on an empty database
+    # before any rows land; ``NOT NULL`` is enforced via the backfill
+    # in ``src.data.migrate``.
+    external_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     embedding: Mapped[Optional["CompanyEmbedding"]] = relationship(
         "CompanyEmbedding",
@@ -115,16 +139,19 @@ class Company(Base):
     )
 
     __table_args__ = (
-        # A given (name, batch) appears in exactly one snapshot. The
-        # scraper dedupes on this key, so re-ingesting the same JSONL
-        # is a no-op.
-        UniqueConstraint("name", "batch", name="uq_companies_name_batch"),
+        # Cross-source idempotency: re-running the same JSONL is a
+        # no-op for the company table.
+        UniqueConstraint("source", "external_id", name="uq_companies_source_external_id"),
         Index("ix_companies_batch", "batch"),
         Index("ix_companies_snapshot_date", "snapshot_date"),
+        Index("ix_companies_source", "source"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return f"<Company id={self.id} name={self.name!r} batch={self.batch!r}>"
+        return (
+            f"<Company id={self.id} source={self.source!r} "
+            f"name={self.name!r} external_id={self.external_id!r}>"
+        )
 
 
 class CompanyEmbedding(Base):

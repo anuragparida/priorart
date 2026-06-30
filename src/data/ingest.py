@@ -7,8 +7,9 @@ Phase 1.3 (docs/PHASE-1.md §1.3). Pipeline:
 
 Idempotency
 -----------
-- The (name, batch) unique constraint on ``companies`` means a
-  re-run of the same JSONL is a no-op for the company table.
+- The (source, external_id) unique constraint on ``companies`` means
+  a re-run of the same JSONL is a no-op for the company table.
+  ``external_id`` is the YC url (canonical directory slug).
 - The (company_id, model_version, chunk_index) unique constraint on
   ``company_embeddings`` means a re-run with the same model
   version is a no-op for the embedding table. We use
@@ -33,6 +34,11 @@ CLI
 ---
     uv run python -m src.data.ingest --snapshot data/snapshots/yc_<date>.jsonl
     uv run priorart-ingest  # uses today's snapshot
+
+Phase 2.7 note: this module is the YC-only ingest path used by
+``make ingest`` (Phase 1 backwards compat). The cross-source merge
++ dedup path lives in :mod:`src.data.corpus_build` and is invoked
+by ``make corpus-build``.
 """
 
 from __future__ import annotations
@@ -44,7 +50,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Optional
 
 import typer
 from sqlalchemy import select
@@ -67,15 +73,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CompanyRecord:
-    """One row of the YC JSONL, normalised for ingest."""
+    """One row of a corpus JSONL, normalised for ingest.
+
+    Phase 2.7: ``source`` is now a plain prefix (``yc`` /
+    ``producthunt`` / ``hn``) and ``external_id`` carries the
+    source's natural primary key. The old ``(name, batch)`` dedup
+    key was replaced by ``(source, external_id)`` — see
+    :class:`src.data.models.Company`.
+    """
 
     name: str
     description: str
-    batch: str
+    batch: Optional[str]
     status: str
     url: str
     tags: list[str]
     source: str
+    external_id: str
     snapshot_date: date
 
 
@@ -85,6 +99,11 @@ def load_snapshot(path: Path) -> Iterator[CompanyRecord]:
     Skips blank lines. Raises on malformed JSON — the scraper's
     idempotency contract means the file is either valid or the
     scraper is broken, and a silent skip would mask the latter.
+
+    Phase 2.7 dispatch: the loader is YC-shaped by default (since
+    this is the Phase 1 entry point); the cross-source loader
+    lives in :mod:`src.data.corpus_build` and dispatches on the
+    filename prefix.
     """
     snap_date = date.fromisoformat(_date_from_filename(path))
     with path.open("r", encoding="utf-8") as fh:
@@ -93,14 +112,20 @@ def load_snapshot(path: Path) -> Iterator[CompanyRecord]:
             if not raw:
                 continue
             row = json.loads(raw)
+            url = str(row.get("url", "")).strip()
             yield CompanyRecord(
                 name=str(row["name"]).strip(),
                 description=str(row.get("description", "")).strip(),
                 batch=str(row["batch"]).strip(),
                 status=str(row.get("status", "Unknown")).strip() or "Unknown",
-                url=str(row.get("url", "")).strip(),
+                url=url,
                 tags=[str(t).strip() for t in row.get("tags", []) if str(t).strip()],
-                source=f"yc:{snap_date.isoformat()}",
+                source="yc",
+                # YC's natural id is the canonical directory slug in
+                # the url. Fall back to name if url is missing so the
+                # (source, external_id) unique constraint never sees
+                # NULL.
+                external_id=url or f"name:{str(row['name']).strip()}",
                 snapshot_date=snap_date,
             )
 
@@ -153,8 +178,8 @@ class IngestStats:
 def _upsert_company(session: Session, rec: CompanyRecord) -> int:
     """Upsert one Company row, return the id.
 
-    Uses Postgres' ``ON CONFLICT (name, batch) DO UPDATE`` so a
-    re-run of the same JSONL updates the description / tags / url
+    Uses Postgres' ``ON CONFLICT (source, external_id) DO UPDATE`` so
+    a re-run of the same JSONL updates the description / tags / url
     in place. The RETURNING clause gives us the id (new or
     existing) without a second SELECT.
     """
@@ -168,16 +193,18 @@ def _upsert_company(session: Session, rec: CompanyRecord) -> int:
             url=rec.url,
             tags=rec.tags,
             source=rec.source,
+            external_id=rec.external_id,
             snapshot_date=rec.snapshot_date,
         )
         .on_conflict_do_update(
-            index_elements=["name", "batch"],
+            index_elements=["source", "external_id"],
             set_={
+                "name": rec.name,
                 "description": rec.description,
+                "batch": rec.batch,
                 "status": rec.status,
                 "url": rec.url,
                 "tags": rec.tags,
-                "source": rec.source,
                 "snapshot_date": rec.snapshot_date,
             },
         )
