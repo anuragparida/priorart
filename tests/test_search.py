@@ -376,13 +376,21 @@ def test_search_request_accepts_valid_payload():
 
 
 def test_search_hit_field_ranges():
-    """SearchHit enforces similarity ∈ [-1, 1] and confidence ∈ [0, 1]."""
+    """SearchHit enforces similarity >= -1 (cosine floor) and confidence ∈ [0, 1].
+
+    Phase 2.9 dropped the ``similarity <= 1.0`` upper bound so BM25
+    raw scores (which can run into the tens for long descriptions)
+    pass through unmodified. Confidence is still the threshold
+    signal so it stays in [0, 1].
+    """
     with pytest.raises(Exception):
-        SearchHit(id=1, name="X", description="y", similarity=1.5, confidence=0.5)
+        SearchHit(id=1, name="X", description="y", similarity=-1.5, confidence=0.5)
     with pytest.raises(Exception):
         SearchHit(id=1, name="X", description="y", similarity=0.5, confidence=-0.1)
     with pytest.raises(Exception):
         SearchHit(id=1, name="X", description="y", similarity=0.5, confidence=1.5)
+    # BM25 path: similarity > 1 is now allowed.
+    SearchHit(id=1, name="X", description="y", similarity=12.5, confidence=0.9)  # no raise
 
 
 # ---------------------------------------------------------------------------

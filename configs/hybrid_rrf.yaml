@@ -1,0 +1,49 @@
+# Hybrid RRF retrieval config — Phase 2.9.
+#
+# Reciprocal Rank Fusion of dense (bge-m3 pgvector ANN) + BM25
+# (rank_bm25 over companies.name + companies.description). Each
+# retriever returns its own ranked list; the fusion ranks by
+# ``1 / (k + rank)`` summed across lists, with k=60 (the original
+# RRF paper's default — Cormack, Clarke, Buettcher 2009).
+#
+# Why RRF
+# -------
+# RRF is the simplest ensemble that doesn't require score
+# calibration (BM25 and cosine live on different scales), and the
+# k=60 default is empirically strong on TREC runs. It does NOT
+# combine raw scores — it combines ranks, which is what we want
+# here because we're fusing a cosine ranking (dense) with a BM25
+# ranking (lexical) and the two scales don't talk to each other.
+#
+# The dense + BM25 lists are over-fetched by 2x so RRF has room to
+# find cross-list hits that aren't in either top_k; the final slice
+# is to top_k.
+#
+# Why RRF_K=60
+# ------------
+# k=60 flattens the contribution of very-high ranks (top-1 of one
+# retriever contributes 1/61; top-1 of both contributes 2/61). k=60
+# is the canonical pick — Phase 2.9 doesn't sweep it.
+#
+# Cohere rerank stays opt-in (AGENTS.md + PHASE-2.md §Pitfalls).
+# This is the *default* hybrid config; a future Cohere rerank
+# config would be ``configs/hybrid_rrf_cohere.yaml`` and would NOT
+# land in the default leaderboard CSV.
+#
+# Phase 2.9 acceptance per docs/PHASE-2.md §Definition-of-done:
+# Hybrid MRR is informational; the spec target is ≥ 0.65.
+
+name: hybrid_rrf
+embedding_model: BAAI/bge-m3 + rank_bm25
+embedding_dim: 1024  # Dense vector dim; BM25 fused via rank, not vector math.
+top_k: 20
+api_url: http://localhost:18001/search
+notes: |
+  Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+  (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+  companies table. k=60 (Cormack et al. 2009 default). Dense
+  confidence is inherited on the fused hit so the threshold sweep
+  is comparable across modes. Both retrievers over-fetch by 2x to
+  leave RRF room to find cross-list hits; the final slice is to
+  top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+  config.

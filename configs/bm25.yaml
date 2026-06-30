@@ -1,0 +1,45 @@
+# BM25 lexical retrieval config — Phase 2.9.
+#
+# Pure lexical retrieval over the companies.name + companies.description
+# fields via rank_bm25. No embeddings are computed for the query and no
+# LLM is called; this config is the offline floor of the leaderboard.
+#
+# Tokeniser
+# ----------
+# Lowercase, split on non-alphanumeric runs (so "AI-powered" → ["ai",
+# "powered"]), drop a tiny English stopword set (~40 words, see
+# ``src.api.search._BM25_STOPWORDS``). Deliberately not aggressive:
+# long stopword lists hurt recall on short queries and BM25's IDF
+# already down-weights function words. The tokeniser lives in
+# ``src/api/search.py`` so it's reproducible across runs.
+#
+# BM25 hyperparameters
+# --------------------
+# ``k1=1.5, b=0.75`` are the literature defaults (Robertson, Zaragoza
+# et al. 2009) and the canonical pick in TREC runs — pinned here for
+# reproducibility. They live in ``src/api/search.py`` (constants
+# ``BM25_K1``, ``BM25_B``).
+#
+# Why a separate config from dense
+# --------------------------------
+# The eval harness treats configs as black boxes with a ``name`` and
+# an ``api_url``; the actual retrieval happens inside the ``/search``
+# route when ``mode=bm25`` is passed. The same endpoint handles all
+# three modes — no new route per config — so the leaderboard CSV
+# rows stay 1:1 with HTTP requests.
+#
+# Phase 2.9 acceptance per docs/PHASE-2.md §Definition-of-done:
+# BM25 MRR is informational; the spec target is ≥ 0.5.
+
+name: bm25
+embedding_model: rank_bm25
+embedding_dim: 0  # BM25 doesn't produce a dense vector; we set 0 as a sentinel.
+top_k: 20
+api_url: http://localhost:18001/search
+notes: |
+  Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+  companies.name + companies.description. k1=1.5, b=0.75 (literature
+  defaults). Tiny English stopword set; lowercased + split on
+  non-alphanumeric runs. The corpus index is built lazily on first
+  call and cached at module level; ingest that grows the corpus past
+  the cached row_count triggers an automatic rebuild.

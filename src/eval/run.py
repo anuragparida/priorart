@@ -131,6 +131,19 @@ class PerRecordResult:
     search_error: Optional[str] = None
 
 
+# Map retrieval config names to the ``mode`` discriminator that
+# ``POST /search`` expects. Phase 2.9 added ``bm25`` and ``hybrid``
+# modes to the API (see ``src/api/search.py::SearchRequest.mode``).
+# Without this mapping every config would hit the dense endpoint
+# and the leaderboard rows would all be identical — a silent
+# correctness bug that ships fake BM25 / Hybrid numbers.
+_MODE_FOR_CONFIG: Dict[str, str] = {
+    "dense_bge_m3": "dense",
+    "bm25": "bm25",
+    "hybrid_rrf": "hybrid",
+}
+
+
 def run_one_record(
     record: BenchmarkRecord,
     *,
@@ -145,12 +158,18 @@ def run_one_record(
     which keeps the threshold sweep readable (0.65 = "65%
     confidence") and matches the Phase 1.4 contract.
 
+    The retrieval ``mode`` is selected from the config name
+    (``_MODE_FOR_CONFIG``). Unknown config names default to
+    ``dense`` so a typo doesn't silently break the leaderboard —
+    the row is still written but the mode comment flags it.
+
     On error: the record is marked ``search_error`` and the run
     continues. The runner reports the count of errored records at
     the end so a flapping API doesn't silently produce fake
     numbers.
     """
-    payload = {"query": record.idea, "top_k": config.top_k}
+    mode = _MODE_FOR_CONFIG.get(config.name, "dense")
+    payload = {"query": record.idea, "top_k": config.top_k, "mode": mode}
     try:
         r = client.post(config.api_url, json=payload, timeout=30.0)
         r.raise_for_status()
