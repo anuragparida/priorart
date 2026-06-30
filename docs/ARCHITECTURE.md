@@ -2,14 +2,18 @@
 
 > Why this is built the way it's built. The architectural decisions — Temporal for the per-idea workflow, Dagster for the batch data platform, MLflow for experiments, Langfuse for LLM observability, pgvector as the actual store — are deliberate, and the boundary between them is the senior-engineer signal on the CV.
 
+![PriorArt system architecture — Temporal workflow + Langfuse + MLflow + pgvector; Dagster boundary is Phase 3 (dashed amber)](assets/architecture.png)
+
+The diagram above is rendered from `docs/assets/architecture.svg` (also a hand-rendered, dark-themed SVG so the asset is reproducible from the source). The Mermaid version sits below for inline editors and PR previews. Dagster is intentionally drawn with a dashed amber boundary and marked `Phase 3 — not yet built` — see [§ Dagster (Phase 3)](#dagster-handles-the-batch-data-platform) for the boundary rationale and the deferred-work list.
+
 ---
 
-## The big picture
+## The big picture (Phase 2 ships, Phase 3 deferred)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                          USER / BROWSER                          │
-│  Vite + React + shadcn/ui  (Phase 1: 15173)                      │
+│  Vite + React 19 + shadcn/ui  (Phase 1: 15173)                   │
 └────────────────────────────┬────────────────────────────────────┘
                              │ POST /ideas/analyze
                              ▼
@@ -23,7 +27,7 @@
                              │ Temporal client
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│   TEMPORAL  (Phase 2+: 7233 for UI)                              │
+│   TEMPORAL  (Phase 2: 7233 for UI)  ✓ SHIPPED                    │
 │   Workflow: IdeaAnalysisWorkflow                                 │
 │   Activities:                                                    │
 │     1. embed_idea                  ← bge-m3                     │
@@ -38,32 +42,33 @@
          ▼                  ▼                  ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
 │   POSTGRES      │ │   LANGFUSE      │ │   MLFLOW        │
-│   + PGVECTOR    │ │   (Phase 2+:    │ │   (Phase 2+:    │
+│   + PGVECTOR    │ │   (Phase 2:     │ │   (Phase 2:     │
 │   (Phase 1+:    │ │   13000/13001)  │ │   15000)        │
-│   15432)        │ │                 │ │                 │
-│                 │ │   - LLM traces  │ │   - experiment  │
-│   - companies   │ │   - metadata    │ │     tracking    │
-│   - company_    │ │   - scoring     │ │   - params      │
-│     embeddings  │ │   - feedback    │ │   - metrics     │
-│   - eval_runs   │ │                 │ │   - artifacts   │
-└────────┬────────┘ └─────────────────┘ └─────────────────┘
+│   15432)        │ │   ✓ SHIPPED     │ │   ✓ SHIPPED     │
+│                 │ │                 │ │                 │
+│   - companies   │ │   - LLM traces  │ │   - experiment  │
+│   - company_    │ │   - metadata    │ │     tracking    │
+│     embeddings  │ │   - scoring     │ │   - params      │
+│   - eval_runs   │ │   - feedback    │ │   - metrics     │
+└────────┬────────┘ └─────────────────┘ │   - artifacts   │
+         │                               └─────────────────┘
          │
-         │ refreshed by Dagster (Phase 3+)
+         │  ┌─────────────────────────────────────────────────┐
+         │  │  DAGSTER  (Phase 3: 13002)  ⏳ NOT YET BUILT    │
+         │  │  Batch data platform — assets, sensors, lineage │
+         │  │  Assets:                                         │
+         │  │    - yc_directory                                │
+         │  │    - product_hunt_archive                        │
+         │  │    - hn_show_posts                               │
+         │  │    - company_embeddings                          │
+         │  │    - eval_benchmark                              │
+         │  │  Schedules: nightly_re_embedding                │
+         │  │  Sensors: config_change → eval_regression_job   │
+         │  └─────────────────────────────────────────────────┘
          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│   DAGSTER  (Phase 3+: 13002)                                     │
-│   Assets:                                                        │
-│     - yc_directory                                                │
-│     - product_hunt_archive                                        │
-│     - hn_show_posts                                               │
-│     - company_embeddings                                          │
-│     - eval_benchmark                                              │
-│   Schedules: nightly re-embedding                                │
-│   Sensors: config_change → fires eval regression                 │
-└─────────────────────────────────────────────────────────────────┘
 ```
 
-The Mermaid version (for the README):
+The Mermaid version (for the README and PR previews):
 
 ```mermaid
 flowchart TB
@@ -78,6 +83,8 @@ flowchart TB
   Eval -->|writes| Leaderboard[(leaderboard.csv)]
   Eval -->|logs| MLflow
 ```
+
+Solid arrows = synchronous calls; dashed arrows = async/scheduled/sensor-driven.
 
 ---
 
@@ -154,28 +161,39 @@ class IdeaAnalysisWorkflow:
 
 ### Dagster handles the batch data platform
 
-**Why Dagster:**
+> **Status:** ⏳ Phase 3 — NOT YET BUILT. The boundary and the asset
+> list below are the design; the code lands in [`docs/PHASE-3.md`](PHASE-3.md).
+
+**Why Dagster (the boundary rationale):**
 - The corpus ingestion is a *batch data pipeline*. It runs on a schedule (nightly). It materializes assets (`yc_directory`, `product_hunt_archive`, `company_embeddings`). It has lineage (a change in the YC scrape re-derives the embeddings). It has sensors (watch for config changes, fire the regression).
 - Dagster's asset-centric model is the right abstraction: "the current state of `company_embeddings` is derived from `yc_directory` and `models.yaml`." That's a clearer mental model than "run this script on a cron and write to a database."
 - Dagster's UI shows the lineage graph, the schedule, the sensor status, the asset materialization history. That's the "data platform" view that ML engineers and platform engineers expect.
 
-**The Dagster assets in full:**
+**The Dagster assets (Phase 3 — design only, not yet implemented):**
 
 ```python
+# Phase 3 work — not yet implemented. Design captured here so the
+# Temporal-Dagster boundary is documented even before Dagster ships.
+from dagster import asset, daily_schedule, sensor, RunRequest
+
+
 @asset
 def yc_directory(snapshot_date: str) -> pd.DataFrame:
     """Scrape + clean + dedup the YC public directory."""
     return scrape_yc(snapshot_date)
+
 
 @asset
 def product_hunt_archive(snapshot_date: str) -> pd.DataFrame:
     """Scrape the Product Hunt top 5K launches."""
     return scrape_product_hunt(snapshot_date)
 
+
 @asset
 def hn_show_posts(snapshot_date: str) -> pd.DataFrame:
     """Paginate the HN Algolia API for top 'Show HN' posts."""
     return scrape_hn_show(snapshot_date)
+
 
 @asset
 def company_embeddings(
@@ -187,15 +205,18 @@ def company_embeddings(
     merged = merge_sources([yc_directory, product_hunt_archive, hn_show_posts])
     write_to_pgvector(merged, model_version="bge-m3-v0.1")
 
+
 @asset
 def eval_benchmark() -> Path:
     """Track the current eval-set version, surface staleness."""
     return Path("evals/labeled_v300.jsonl")
 
+
 @daily_schedule
 def nightly_re_embedding():
     """Re-embed on snapshot change."""
     return RunRequest()
+
 
 @sensor(job=eval_regression_job)
 def config_change_sensor(context, yaml_files):
@@ -205,6 +226,30 @@ def config_change_sensor(context, yaml_files):
         yield RunRequest()
         context.update_cursor(new_mtime)
 ```
+
+**Phase 3 deferred-work list (the gaps the Dagster boundary leaves open until it ships):**
+
+- [ ] **Asset definitions** — the five assets above, with the merge logic
+      pulled out of `src/data/ingest.py` into a Dagster-managed flow.
+- [ ] **Nightly `re_embedding` schedule** — replace the manual
+      `make ingest` with `@daily_schedule` firing on UTC midnight.
+- [ ] **`config_change` sensor** — watches `configs/*.yaml` +
+      `models.yaml` mtime, fires the eval regression job when either
+      changes. This is the local-dev substitute for the Phase 3
+      GitHub Actions regression check.
+- [ ] **Lineage graph in the Dagster UI** — the visualization that
+      makes the data platform story visible to operators.
+- [ ] **Asset materialization backfill** — re-materialize the current
+      `evals/labeled_v300.jsonl` and `company_embeddings` snapshot
+      from the Dagster origin assets so the UI's "last materialization"
+      timestamp is populated.
+
+**Why Phase 3 and not Phase 2:** per `PHASE-2.md` §Pitfall, Dagster is
+explicitly deferred. The corpus ingestion is currently triggered by
+hand (`make scrape && make ingest`) which is fine for the weekend
+build; Dagster earns its keep once there's a real schedule and a real
+sensor. Adding it in Phase 2 is scope creep on top of Temporal +
+Langfuse + MLflow.
 
 ### The boundary
 

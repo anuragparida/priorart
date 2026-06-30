@@ -109,8 +109,12 @@ eval: ## Run the eval harness against the live priorart API. Writes results/lead
 		$(EVAL_MLFLOW_FLAGS)
 
 .PHONY: screenshot
-screenshot: ## Re-render docs/assets/leaderboard-v1.png from results/leaderboard.csv.
+screenshot: ## Re-render docs/assets/leaderboard-v1.png from results/leaderboard.csv (Phase 1 dense config).
 	$(PY) scripts/render_leaderboard_screenshot.py
+
+.PHONY: screenshot-v2
+screenshot-v2: ## Re-render docs/assets/leaderboard-v2.png from results/leaderboard.csv (Phase 2.11, 3 configs on labeled_v300).
+	$(PY) scripts/render_leaderboard_v2_screenshot.py
 
 .PHONY: smoke
 smoke: ## End-to-end smoke test: hits /healthz + /search + /ideas/analyze. Exits 0 on success.
