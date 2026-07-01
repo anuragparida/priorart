@@ -98,14 +98,25 @@ dagster:
     # corpus manifest). The DAGSTER_PORT below is what
     # ``docker compose up -d dagster`` binds.
   # Phase 3.2 (card t_877e48cd) — the config-change sensor that
-  # fires the eval-harness regression on a YAML edit. Declared
-  # here so the operator can see the surface, but the sensor
-  # implementation lands in 3.2.
+  # fires the eval-harness regression on a YAML edit. The
+  # watch_paths below mirror ``src/dagster_assets/sensors/
+  # config_change_sensor.py:_default_watch_paths()`` and the
+  # 3.6 GitHub Actions trigger_paths (keep the surfaces in sync
+  # so a YAML edit fires the same regression both locally and
+  # on a PR).
   config_change_sensor:
     watch_paths:
-      - configs/
-      - models.yaml
+      - configs/                 # per-config YAMLs (dense_bge_m3, bm25, hybrid_rrf)
+      - models.yaml              # embedding / LLM / corpus pins
+      - evals/labeled_v300.jsonl # eval-set version
+      - src/embedding/           # bge-m3 wrapper code
+      - src/llm/                 # analyzer + prompts
     target_job: eval_regression_job
+    # 30s debounce window. Enforced by Dagster's
+    # ``minimum_interval_seconds`` on the sensor AND by the
+    # mtime cursor (a file that hasn't moved since the last
+    # tick is not re-fired even if the tick fires).
+    debounce_seconds: 30
   # Phase 3.6 (card t_e0f62c2a) — the GitHub Actions regression
   # workflow. Listed here for traceability.
   eval_regression:

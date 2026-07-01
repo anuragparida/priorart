@@ -1,9 +1,10 @@
-"""Dagster Definitions — Phase 3.1 (card t_7928b3e2).
+"""Dagster Definitions — Phase 3.1 (card t_7928b3e2) + 3.2 sensor (t_877e48cd).
 
 This module is the entry point ``dagster dev`` loads via the
 ``PYTHONPATH=src dagster dev -m src.dagster.definitions`` CLI.
 
-It bundles the five assets and the nightly schedule into a single
+It bundles the five assets, the nightly schedule, the
+config-change sensor, and the eval-regression job into a single
 ``Definitions`` object that Dagster's code-server can introspect.
 
 Why a Definitions object (not @job / @repository)
@@ -25,6 +26,10 @@ from src.dagster_assets.assets import (
     nightly_re_embedding_schedule,
     product_hunt_archive,
     yc_directory,
+)
+from src.dagster_assets.sensors import (
+    config_change_sensor,
+    eval_regression_job,
 )
 
 
@@ -57,9 +62,16 @@ defs = Definitions(
         company_embeddings,
         eval_benchmark,
     ],
-    jobs=[nightly_re_embedding_job],
+    jobs=[nightly_re_embedding_job, eval_regression_job],
     schedules=[nightly_re_embedding_schedule],
+    sensors=[config_change_sensor],
 )
 
 
-__all__ = ["defs", "nightly_re_embedding_job", "nightly_re_embedding_schedule"]
+__all__ = [
+    "defs",
+    "nightly_re_embedding_job",
+    "nightly_re_embedding_schedule",
+    "config_change_sensor",
+    "eval_regression_job",
+]
