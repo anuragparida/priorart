@@ -266,7 +266,7 @@ psql -h <postgres-host> -U postgres -c "CREATE DATABASE temporal_visibility;"
 Use the [upstream Temporal Helm repo](https://github.com/temporalio/helm-charts):
 
 ```bash
-helm repo add temporal https://temporal.github.io/helm-charts
+helm repo add temporal https://temporalio.github.io/helm-charts
 helm repo update
 ```
 
