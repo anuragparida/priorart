@@ -471,8 +471,13 @@ def metrics_from_summary(
     ``best_*`` keys (per the runner contract). We re-derive them as
     a clean dict so the MLflow run row matches what the spec asks
     for (``MRR / nDCG@10 / P@5 / R@10 / FPR-on-novel``).
+
+    Phase 3.3 also adds ``ece`` to the run's metrics — the
+    Expected Calibration Error (same value at every threshold; ECE
+    is a run-level metric). We surface it as ``ece`` so the MLflow
+    UI graph panel picks it up without a rename.
     """
-    return {
+    metrics: Dict[str, float] = {
         "mrr": float(summary["best_mrr"]),
         "ndcg_at_10": float(summary["best_ndcg_at_10"]),
         "precision_at_5": float(summary["best_precision_at_5"]),
@@ -480,6 +485,16 @@ def metrics_from_summary(
         "fpr_on_novel": float(summary["best_fpr_on_novel"]),
         "best_threshold": float(best_threshold),
     }
+    # ECE is optional in the summary dict (older eval-runs
+    # pre-dated Phase 3.3 and won't have it). Only log the metric
+    # when present so the MLflow UI doesn't get spammed with NaN
+    # values on stale rows.
+    if "ece" in summary and summary["ece"] is not None:
+        try:
+            metrics["ece"] = float(summary["ece"])
+        except (TypeError, ValueError):
+            pass
+    return metrics
 
 
 def params_from_summary(

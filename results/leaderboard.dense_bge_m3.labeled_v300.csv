@@ -1,8 +1,0 @@
-config,benchmark,corpus_count,embedding_model,threshold,mrr,ndcg_at_10,precision_at_5,recall_at_10,fpr_on_novel,records_total,records_novel,records_duplicate,records_skipped,search_errors,selected_threshold,notes
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."

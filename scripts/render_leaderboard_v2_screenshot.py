@@ -99,10 +99,15 @@ def render_png(rows: list[dict[str, str]]) -> Path:
     # Headers: config + embedding + 5 metrics
     headers = [
         "config", "embedding", "threshold",
-        "MRR", "nDCG@10", "P@5", "R@10", "FPR-novel",
+        "MRR", "nDCG@10", "P@5", "R@10", "FPR-novel", "ECE",
     ]
     table = []
     for row in rows:
+        ece_cell = row.get("ece", "")
+        try:
+            ece_str = fmt_num(ece_cell, 3)
+        except (TypeError, ValueError):
+            ece_str = "—"
         table.append([
             row["config"],
             short_label(row["embedding_model"]),
@@ -112,6 +117,7 @@ def render_png(rows: list[dict[str, str]]) -> Path:
             fmt_num(row["precision_at_5"], 3),
             fmt_num(row["recall_at_10"], 3),
             fmt_num(row["fpr_on_novel"], 3),
+            ece_str,
         ])
 
     bg = (16, 16, 20)
@@ -163,9 +169,14 @@ def render_png(rows: list[dict[str, str]]) -> Path:
         "  bm25         → 0.5 (MRR=0.392, FPR-novel=1.00)",
         "  hybrid_rrf   → 0.8 (MRR=0.458, FPR-novel=0.63)",
         "",
+        "PHASE-3.md §3.3 ECE column (run-level, LLM-generated v300):",
+        "  per-config calibration PNGs live under docs/assets/calibration-*.png",
+        "  ECE ≤ 0.10 is the *informational* target; recorded verbatim below.",
+        "",
         "PHASE-2.md §Definition-of-done MRR targets are INFORMATIONAL until",
         "the labeled_v300 hand-label pass lands (eval set is LLM-generated v2).",
     ]
+
 
     n_table_rows = 1 + len(table)
     table_height = mono_h * n_table_rows + 10
@@ -231,16 +242,20 @@ def render_png(rows: list[dict[str, str]]) -> Path:
     y += mono_h + 6
 
     # Body rows
+    FPR_NOVEL_COL_INDEX = 7  # 0-based index in the headers list
     for row in table:
         cur_x = table_x
         for i, cell in enumerate(row):
-            # First two columns (config, embedding) are descriptive — keep fg.
+            # First column (config) is the row label — keep accent.
             # The FPR-novel column gets the rose caveat color since neither
-            # bm25 nor hybrid_rrf clears the 0.15 cap.
-            if i == len(row) - 1:
+            # bm25 nor hybrid_rrf clears the 0.15 cap. ECE is dim because
+            # it's a run-level secondary metric here.
+            if i == FPR_NOVEL_COL_INDEX:
                 color = warn
             elif i == 0:
                 color = accent
+            elif i == 8:  # ECE column — secondary metric, dim text
+                color = dim
             else:
                 color = fg
             draw_cell(cell, cur_x, y, mono_font, color)

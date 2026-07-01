@@ -85,12 +85,26 @@ from src.eval.mlflow_logger import (
     metrics_from_summary,
     params_from_summary,
 )
+from src.eval.calibration import (
+    bin_predictions as bin_predictions_calibration,
+    compute_ece as compute_ece_metric,
+    plot_calibration as plot_calibration_curve,
+)
 
 
-# CSV schema — fixed for v1 (Phase 1.6). If you add a column,
-# downstream readers (the dashboard in 1.11, the README leaderboard
-# screenshot in 1.10) need to be updated too. The schema is
-# documented in docs/EVAL.md as the "Leaderboard CSV schema".
+# CSV schema — fixed for v1 (Phase 1.6) with v2 additions (Phase 2.9,
+# Phase 3.3). If you add a column, downstream readers (the dashboard
+# in 1.11, the README leaderboard screenshot in 1.10, the
+# ``render_leaderboard*.py`` scripts, the calibration PNG in 3.3)
+# need to be updated too. The schema is documented in docs/EVAL.md
+# as the "Leaderboard CSV schema".
+#
+# Phase 3.3: added ``ece`` (Expected Calibration Error) at the
+# chosen threshold. The ECE is independent of the threshold — it's
+# a property of the retrieval-config's score distribution and the
+# eval-set's label distribution, not the threshold sweep. We still
+# write one ``ece`` value per row so the CSV is uniform (the
+# downstream reader doesn't need a separate row key).
 _CSV_COLUMNS: Tuple[str, ...] = (
     "config",
     "benchmark",
@@ -102,6 +116,7 @@ _CSV_COLUMNS: Tuple[str, ...] = (
     "precision_at_5",
     "recall_at_10",
     "fpr_on_novel",
+    "ece",
     "records_total",
     "records_novel",
     "records_duplicate",
@@ -383,6 +398,7 @@ def write_duckdb(
                 precision_at_5 DOUBLE,
                 recall_at_10 DOUBLE,
                 fpr_on_novel DOUBLE,
+                ece DOUBLE,
                 records_total BIGINT,
                 records_novel BIGINT,
                 records_duplicate BIGINT,
@@ -394,6 +410,22 @@ def write_duckdb(
             )
             """
         )
+        # Forward-compatible column add for older ``eval.duckdb``
+        # files that pre-date Phase 3.3. ``ALTER TABLE … ADD
+        # COLUMN`` is idempotent only if we guard on the column
+        # existing — DuckDB does not have ``ADD COLUMN IF NOT
+        # EXISTS`` prior to 0.10, so we check the schema first.
+        existing_cols = {
+            row[0]
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'leaderboard'"
+            ).fetchall()
+        }
+        if "ece" not in existing_cols:
+            con.execute(
+                "ALTER TABLE leaderboard ADD COLUMN ece DOUBLE"
+            )
         if rows:
             # DuckDB can ingest a list of dicts via ``executemany``
             # but the column order needs to match the table. We use
@@ -463,6 +495,11 @@ def _format_markdown_table(
 
     The dashboard in 1.11 and the README's leaderboard screenshot
     in 1.10 both paste this verbatim, so the format is fixed.
+
+    Phase 3.3 added the ``ECE`` column (the bin-count-weighted
+    Expected Calibration Error) — same value for every row in the
+    table because ECE is a run-level metric, not a per-threshold
+    metric.
     """
     lines: List[str] = []
     lines.append(f"# Eval leaderboard — `{config_name}` on `{benchmark_path.name}`")
@@ -471,19 +508,29 @@ def _format_markdown_table(
         "Metrics are computed at each cosine threshold on the sweep "
         "[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]. The "
         "`selected` row is the threshold that maximises MRR subject "
-        "to FPR-on-novel ≤ 0.15 (Phase 1 acceptance cap)."
+        "to FPR-on-novel ≤ 0.15 (Phase 1 acceptance cap). "
+        "**ECE** is run-level (independent of the threshold sweep). "
+        "PHASE-3.md §3.3 target: ECE ≤ 0.10 (informational). "
+        "Eval set: `labeled_v300.jsonl` (LLM-generated v2, "
+        "hand-review pending)."
     )
     lines.append("")
     header = (
-        "| threshold | MRR | nDCG@10 | precision@5 | recall@10 | FPR-on-novel | selected |"
+        "| threshold | MRR | nDCG@10 | precision@5 | recall@10 | "
+        "FPR-on-novel | ECE | selected |"
     )
-    sep = "|---|---|---|---|---|---|---|"
+    sep = "|---|---|---|---|---|---|---|---|"
     lines.append(header)
     lines.append(sep)
     for row in rows:
         is_sel = bool(row.get("selected_threshold"))
         marker = "**" if is_sel else ""
         thr = row.get("threshold", "")
+        ece_cell = row.get("ece", "")
+        try:
+            ece_str = f"{float(ece_cell):.3f}"
+        except (TypeError, ValueError):
+            ece_str = str(ece_cell) if ece_cell != "" else "—"
         lines.append(
             f"| {marker}{thr}{marker} "
             f"| {marker}{float(row.get('mrr', 0)):.3f}{marker} "
@@ -491,6 +538,7 @@ def _format_markdown_table(
             f"| {marker}{float(row.get('precision_at_5', 0)):.3f}{marker} "
             f"| {marker}{float(row.get('recall_at_10', 0)):.3f}{marker} "
             f"| {marker}{float(row.get('fpr_on_novel', 0)):.3f}{marker} "
+            f"| {marker}{ece_str}{marker} "
             f"| {marker}{'YES' if is_sel else ''}{marker} |"
         )
     lines.append("")
@@ -554,7 +602,10 @@ def run_eval(
     # itself — the live API does that and Phase 1.11's dashboard
     # reads the corpus size from the ``companies`` table). The
     # CSV column stays for schema stability.
-    rows: List[Dict[str, Any]] = []
+    #
+    # The ``ece`` value is patched in below after the calibration
+    # pass — until that runs we don't know it.
+    rows: List[Dict[str, Any]] = []  # noqa: F841
     for thr, agg in aggregates.items():
         rows.append(
             {
@@ -568,6 +619,7 @@ def run_eval(
                 "precision_at_5": agg.precision_at_5,
                 "recall_at_10": agg.recall_at_10,
                 "fpr_on_novel": agg.fpr_on_novel,
+                "ece": "",  # filled below from the calibration pass
                 "records_total": len(benchmark),
                 "records_novel": n_novel,
                 "records_duplicate": n_dup,
@@ -597,6 +649,59 @@ def run_eval(
     except (httpx.HTTPError, json.JSONDecodeError):
         pass
 
+    # ------------------------------------------------------------------
+    # Phase 3.3 — Calibration curve + ECE
+    # ------------------------------------------------------------------
+    # Compute the reliability table BEFORE writing the leaderboard
+    # CSV / DuckDB rows so the ``ece`` column lands populated (not as
+    # an empty string) in both sinks. ECE is a property of
+    # (retrieval-config, eval-set) — it doesn't depend on the
+    # threshold sweep — but we still write one ``ece`` value per row
+    # so the CSV is uniform and downstream readers don't need a
+    # separate key.
+    cal_scores: List[float] = []
+    cal_labels: List[bool] = []
+    for res in per_record:
+        if res.top1_score is None:
+            continue
+        cal_scores.append(float(res.top1_score))
+        # The benchmark's is_duplicate flag is what we want here
+        # (matches the ECE definition: "fraction of records in this
+        # bin where is_duplicate=True"). ``PerRecordResult`` already
+        # carries it forward from the benchmark.
+        cal_labels.append(bool(res.is_duplicate))
+    bins = bin_predictions_calibration(cal_scores, cal_labels)
+    ece_value = compute_ece_metric(bins)
+    # Patch every row, then proceed to the writes with the value
+    # already on every dict. The writers (``write_csv`` /
+    # ``write_duckdb``) treat the dict as the source of truth and
+    # read each cell via ``row.get(k, "")``.
+    for row in rows:
+        row["ece"] = ece_value
+
+    # Phase 3.3 honest-scope discipline (c8aa1fb): the labeled_v300
+    # set is LLM-generated, awaiting Anurag's hand-label pass. Stamp
+    # the provenance on the first row's ``notes`` cell so the
+    # "provenance row in the CSV header" requirement (PHASE-3.md
+    # §3.3) survives any downstream grep / pandas read without
+    # breaking the column schema.
+    _PROVENANCE_NOTES = (
+        "provenance=llm-generated-v2-pending-anurag-hand-review "
+        "(eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+    )
+    if rows:
+        first = rows[0]
+        existing = str(first.get("notes", "") or "").strip()
+        first["notes"] = (
+            f"{existing} {_PROVENANCE_NOTES}" if existing else _PROVENANCE_NOTES
+        )
+
+    typer.echo(
+        f"[eval] ece={ece_value:.4f} bins={len(bins)} "
+        f"records_in_calibration={len(cal_scores)} "
+        f"({len(cal_scores)}/{len(per_record)} non-errored)"
+    )
+
     write_csv(output_csv, rows, append=True)
     if db_path is not None:
         write_duckdb(
@@ -609,6 +714,38 @@ def run_eval(
 
     elapsed = time.time() - started
     best_agg = aggregates[best]
+
+    # ----------------------------------------------------------------
+    # Phase 3.3 — Calibration curve + ECE (continued)
+    # ----------------------------------------------------------------
+    # Write the calibration PNG. We do it at every run, not just on
+    # the "selected" row — the curve is the same regardless of
+    # threshold, and a per-config PNG that can be diffed across
+    # runs is more useful than a guarded-once write.
+    docs_assets_dir = EVALS_DIR.parent / "docs" / "assets"
+    cal_png_path = (
+        docs_assets_dir / f"calibration-{config.name}.png"
+    )
+    # Honest provenance stamp matches the Phase 1.5a /
+    # Phase 2.8 discipline (c8aa1fb / 5c1c8fa): the eval set is
+    # LLM-generated and the call-out lives in BOTH the title and
+    # the per-record CSV header so the artifact stays honest
+    # wherever it surfaces.
+    title_extra = ""
+    if ece_value > 0.10:
+        title_extra = (
+            f" (ECE > 0.10 — above the PHASE-3.md §3.3 "
+            f"informational target; recorded verbatim)"
+        )
+    plot_calibration_curve(
+        bins,
+        config_name=config.name,
+        eval_name=benchmark.path.name,
+        provenance="LLM-generated v2, hand-review pending",
+        output_path=cal_png_path,
+        title_extra=title_extra,
+    )
+
     return {
         "config": config.name,
         "benchmark": benchmark.path.name,
@@ -626,6 +763,9 @@ def run_eval(
         "records_novel": n_novel,
         "records_duplicate": n_dup,
         "fpr_cap": fpr_cap,
+        "ece": ece_value,
+        "calibration_bins": bins,
+        "calibration_png": str(cal_png_path),
     }
 
 

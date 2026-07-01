@@ -59,6 +59,13 @@ def render() -> str:
         "§Definition-of-done are INFORMATIONAL until the hand-label pass lands."
     )
     lines.append("")
+    # ECE provenance call-out. Mirrors the PNG title so anyone
+    # reading either artifact sees the same honest statement.
+    lines.append(
+        "<!-- ECE computed against LLM-generated v300; hand-label pending -->\n"
+        "<!-- ECE ≤ 0.10 is the PHASE-3.md §3.3 *informational* target; recorded verbatim below. -->"
+    )
+    lines.append("")
     lines.append(
         "Cohere rerank is opt-in only (AGENTS.md + PHASE-2.md §Pitfalls) and "
         "NOT a default Phase 2 config — not present in this table."
@@ -68,22 +75,36 @@ def render() -> str:
     for (cfg, bench, corpus, model), g in sorted(groups.items(), key=sort_key):
         lines.append(f"## `{cfg}` on `{bench}` — corpus={corpus} ({model})")
         lines.append("")
-        lines.append("| threshold | MRR | nDCG@10 | precision@5 | recall@10 | FPR-on-novel | selected |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append(
+            "| threshold | MRR | nDCG@10 | precision@5 | recall@10 | "
+            "FPR-on-novel | ECE | selected |"
+        )
+        lines.append("|---|---|---|---|---|---|---|---|")
         for r in sorted(g, key=lambda x: float(x["threshold"])):
             sel = "**YES**" if r["selected_threshold"] == "True" else ""
+            ece_cell = r.get("ece", "")
+            try:
+                ece_str = f"{float(ece_cell):.3f}"
+            except (TypeError, ValueError):
+                ece_str = "—" if ece_cell in ("", None) else str(ece_cell)
             lines.append(
                 f"| {r['threshold']} | {r['mrr']} | {r['ndcg_at_10']} | "
                 f"{r['precision_at_5']} | {r['recall_at_10']} | "
-                f"{r['fpr_on_novel']} | {sel} |"
+                f"{r['fpr_on_novel']} | {ece_str} | {sel} |"
             )
         bests = [r for r in g if r["selected_threshold"] == "True"]
         if bests:
             b = bests[0]
+            ece_cell = b.get("ece", "")
+            try:
+                ece_str = f"{float(ece_cell):.3f}"
+            except (TypeError, ValueError):
+                ece_str = "—" if ece_cell in ("", None) else str(ece_cell)
             lines.append("")
             lines.append(
                 f"Best threshold (MRR-max under FPR ≤ 0.15): **{b['threshold']}** "
-                f"— MRR={b['mrr']}, FPR-on-novel={b['fpr_on_novel']}"
+                f"— MRR={b['mrr']}, FPR-on-novel={b['fpr_on_novel']}, "
+                f"ECE={ece_str}"
             )
         lines.append("")
         note = (g[0].get("notes") or "").strip().replace("\n", " ")

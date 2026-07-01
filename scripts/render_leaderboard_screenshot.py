@@ -64,14 +64,23 @@ def build_columns(rows: list[dict[str, str]]) -> tuple[list[str], list[list[str]
 
     The CSV has more columns than the README needs. We project to the
     reader-facing columns: threshold, MRR, nDCG@10, precision@5,
-    recall@10, FPR-on-novel, selected.
+    recall@10, FPR-on-novel, ECE, selected.
+
+    Phase 3.3 added the ``ECE`` column — same value across every
+    row in the table because ECE is a run-level metric. We surface
+    it as the 7th column.
     """
     headers = [
         "threshold", "MRR", "nDCG@10", "precision@5",
-        "recall@10", "FPR-on-novel", "selected",
+        "recall@10", "FPR-on-novel", "ECE", "selected",
     ]
     table: list[list[str]] = []
     for row in rows:
+        ece_cell = row.get("ece", "")
+        try:
+            ece_str = fmt_num(ece_cell, 3)
+        except (TypeError, ValueError):
+            ece_str = "—" if ece_cell in ("", None) else str(ece_cell)
         table.append([
             fmt_num(row["threshold"], 2),
             fmt_num(row["mrr"], 3),
@@ -79,6 +88,7 @@ def build_columns(rows: list[dict[str, str]]) -> tuple[list[str], list[list[str]
             fmt_num(row["precision_at_5"], 3),
             fmt_num(row["recall_at_10"], 3),
             fmt_num(row["fpr_on_novel"], 3),
+            ece_str,
             fmt_selected(row["selected_threshold"]),
         ])
     return headers, table
