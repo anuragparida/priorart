@@ -52,3 +52,74 @@ manifest:
 dedup:
   cross_source_cosine_threshold: 0.85
   source_precedence: [yc, producthunt, hn]
+
+# ---------------------------------------------------------------------
+# Dagster (Phase 3.1 — card t_7928b3e2)
+# ---------------------------------------------------------------------
+#
+# The single source of truth for the Dagster batch data platform:
+# which assets exist, which job the nightly schedule fires, and
+# which cron expression Dagster uses. The Dagster definitions
+# module (``src/dagster_assets/definitions.py``) mirrors the asset
+# list and the schedule job name from this section; the YAML is
+# the operator-facing record of "what's wired into the batch data
+# platform" without having to read Python.
+#
+# Why the cron lives here, not in Python
+# --------------------------------------
+# `nightly_re_embedding_schedule` in ``src/dagster_assets/assets.py``
+# reads ``dagster.nightly_re_embedding.cron`` from this file via the
+# `eval_benchmark` asset's models.yaml reader. The schedule object
+# itself is constructed at module-import time with the values from
+# ``assets.py`` (Dagster requires cron at construction); the
+# ``models.yaml`` value is the auditable record + the sensor's
+# cron-validation hook (Phase 3.2 sensor will read this).
+dagster:
+  webserver_port: 13002
+  # The 5 assets wrapped from Phase 1.2/2.5/2.6/2.7 + the eval-set
+  # freshness check. Names mirror ``src/dagster_assets/assets.py``.
+  assets:
+    - yc_directory
+    - product_hunt_archive
+    - hn_show_posts
+    - company_embeddings
+    - eval_benchmark
+  nightly_re_embedding:
+    job_name: nightly_re_embedding_job
+    cron: "30 2 * * *"   # 02:30 UTC every day
+    execution_timezone: UTC
+    selection:            # assets materialized by the job
+      - yc_directory
+      - product_hunt_archive
+      - hn_show_posts
+      - company_embeddings
+    # Skip-on-no-change behaviour is handled inside the
+    # ``company_embeddings`` asset (mtime check vs the latest
+    # corpus manifest). The DAGSTER_PORT below is what
+    # ``docker compose up -d dagster`` binds.
+  # Phase 3.2 (card t_877e48cd) — the config-change sensor that
+  # fires the eval-harness regression on a YAML edit. Declared
+  # here so the operator can see the surface, but the sensor
+  # implementation lands in 3.2.
+  config_change_sensor:
+    watch_paths:
+      - configs/
+      - models.yaml
+    target_job: eval_regression_job
+  # Phase 3.6 (card t_e0f62c2a) — the GitHub Actions regression
+  # workflow. Listed here for traceability.
+  eval_regression:
+    action: .github/workflows/eval-regression.yml
+    trigger_paths:
+      - configs/**
+      - evals/**
+      - src/embedding/**
+      - src/llm/**
+      - models.yaml
+  eval_benchmark:
+    # The label Dagster surfaces on the asset detail page.
+    # Bumped per eval-set release (1.5a, 2.8, 3.4, …).
+    version: v300-llm-v2
+    # The Path the asset points at. ``eval_benchmark`` reads it
+    # back off the filesystem to surface the record count + age.
+    path: evals/labeled_v300.jsonl

@@ -413,3 +413,67 @@ corpus-build-smoke: ## Phase 2.7 smoke — same as corpus-build but skips the bg
 .PHONY: migrate
 migrate: ## Phase 2.7 — run the schema migrations only (idempotent).
 	$(PY) -m src.data.migrate
+
+# ---------------------------------------------------------------------------
+# Dagster dev environment (Phase 3.1 — card t_7928b3e2)
+# ---------------------------------------------------------------------------
+#
+# PHASE-3.md §3.1 ships Dagster on port 13002 with the 5 corpus
+# assets + the @daily re-embedding schedule. Same squatter discipline
+# as the API + MLflow — separate container, never co-located, runs
+# as a long-lived process.
+#
+# Port choice
+# -----------
+# 13002, NOT 13000/13001 (Langfuse v2). Matches
+# ``models.yaml: dagster.webserver_port`` and the docker-compose
+# service's ``${DAGSTER_PORT:-13002}`` default.
+#
+# First boot is slow (image pull + uv sync + Dagster SDK install +
+# code-server warm-up). Subsequent boots are < 30s because the
+# ``dagster-home`` named volume persists the lineage graph + run
+# history.
+
+DAGSTER_PORT ?= 13002
+
+.PHONY: dagster-up
+dagster-up: ## Start the self-hosted Dagster dev environment on port 13002 (Phase 3.1). Boots webserver + daemon + code-server in one process via `dagster dev`.
+	docker compose up -d dagster
+	@echo "Dagster UI:    http://localhost:$(DAGSTER_PORT)"
+	@echo "Asset graph:   http://localhost:$(DAGSTER_PORT)/asset-graph"
+	@echo "Schedules:     http://localhost:$(DAGSTER_PORT)/schedules"
+	@echo ""
+	@echo "First boot takes 30-60s (image pull + uv sync + Dagster SDK install + code-server warm-up)."
+	@echo "Subsequent boots are < 30s — the named volume 'dagster-home' persists the lineage graph."
+
+.PHONY: dagster-down
+dagster-down: ## Stop the Dagster container (preserves the named volume 'dagster-home'; lineage graph + run history survive).
+	docker compose stop dagster
+
+.PHONY: dagster-logs
+dagster-logs: ## Tail the Dagster container logs.
+	docker compose logs -f dagster
+
+.PHONY: dagster-restart
+dagster-restart: ## Restart the Dagster container (useful after editing src/dagster_assets/*.py or models.yaml).
+	docker compose restart dagster
+
+.PHONY: dagster-shell
+dagster-shell: ## Open a shell in the running Dagster container (debug asset materialization).
+	docker compose exec dagster /bin/bash
+
+.PHONY: dagster-local
+dagster-local: ## Run `dagster dev` directly on the host (faster iteration than the container; uses the host venv).
+	$(PY) -m dagster dev -m src.dagster_assets.definitions --port $(DAGSTER_PORT) --host 0.0.0.0
+
+.PHONY: dagster-validate
+dagster-validate: ## Validate the Dagster Definitions object loads + has the expected asset count (no materialization, no daemon). Useful in CI.
+	$(PY) -c "from src.dagster_assets.definitions import defs; \
+		assets = list(defs.assets); \
+		assert len(assets) == 5, f'expected 5 assets, got {len(assets)}'; \
+		names = sorted(a.key.to_user_string() for a in assets); \
+		expected = sorted(['yc_directory', 'product_hunt_archive', 'hn_show_posts', 'company_embeddings', 'eval_benchmark']); \
+		assert names == expected, f'asset name mismatch: {names} vs {expected}'; \
+		jobs = list(defs.jobs); assert any(j.name == 'nightly_re_embedding_job' for j in jobs); \
+		schedules = list(defs.schedules); assert any(s.name == 'nightly_re_embedding' for s in schedules); \
+		print('OK: 5 assets, 1 nightly job, 1 @daily schedule all wired up.')"

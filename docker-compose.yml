@@ -1,8 +1,34 @@
 name: priorart
 
-# Phase 1.1 skeleton. Only postgres + api are live. The other services
-# (temporal, dagster, langfuse, mlflow, frontend) are scoped for Phase 2/3
-# per docs/PHASE-1.md — do not add them here.
+# -------------------------------------------------------------------------
+# Port-squatting map for this host (Phase 1.1 + 2.3 + 2.4 + 3.1).
+# All squatters are *external* services we share the host with. The
+# priorart service tree never collides because each port is reserved
+# in advance and enforced by the `docker-compose.yml` env defaults.
+#
+#   15000      priorart-mlflow            (Phase 2.4)
+#   15173      clausecraft-frontend       (squatter — don't reuse)
+#   15174      priorart-frontend          (Phase 1.9)
+#   15432      clausecraft-postgres       (squatter — don't reuse)
+#   15433      priorart-postgres          (Phase 1.1)
+#   18000      clausecraft-backend        (squatter — don't reuse)
+#   18001      priorart-api               (Phase 1.4)
+#   13000/01   clausecraft-langfuse-web   (shared Langfuse v2 instance)
+#   13002      priorart-dagster           (Phase 3.1 — THIS FILE)
+#   3002       firecrawl-api              (Phase 2.10 web fallback)
+#   5000       honcho-api                 (squatter — don't reuse)
+#   7233/8233  temporal dev server        (Phase 2.1; CLI, not in compose)
+#
+# Phase 3.1 ships the Dagster service below. As with MLflow and
+# Langfuse, Dagster is its own container — never co-located with
+# the API. (PHASE-2.md §Pitfalls: "Do not put MLflow in the same
+# container as the API." Same rule applies here.)
+# -------------------------------------------------------------------------
+
+# Phase 1.1 skeleton. Postgres + api are the Phase 1 services. The
+# other services (mlflow, langfuse, dagster) are scoped for Phase 2+
+# per docs/PHASE-1.md — do not add them here unless the phase
+# doc + a kanban card require it.
 
 services:
   postgres:
@@ -98,7 +124,77 @@ services:
       timeout: 5s
       retries: 5
 
+  # -----------------------------------------------------------------
+  # Phase 3.1 — Self-hosted Dagster dev environment (card t_7928b3e2).
+  # -----------------------------------------------------------------
+  # PHASE-3.md §3.1 ships Dagster on port 13002. The webserver is
+  # the UI; the daemon polls schedules + sensors. The container is
+  # separate from the API per PHASE-2.md §Pitfalls (the same rule
+  # that kept MLflow and Langfuse out of the API container).
+  #
+  # We use `dagster dev` (single-process webserver + daemon + code
+  # server) — Dagster's recommended local-dev layout. Production
+  # migration to a multi-container layout is documented in
+  # OPERATIONS.md (Phase 3.9) and the official `dagster-k8s` /
+  # `dagster-celery-k8s` images live at docker.io/dagster/.
+  #
+  # Port choice rationale:
+  # - 13002, NOT 13000/13001 (Langfuse is there). 13002 matches
+  #   ``models.yaml: dagster.webserver_port`` and the port the
+  #   Makefile + ops scripts use.
+  # - The container exposes port 3000 internally and maps 13002
+  #   externally via ``${DAGSTER_PORT:-13002}``.
+  #
+  # Persistent state:
+  # - ``dagster-home``: Dagster's ``$DAGSTER_HOME`` directory
+  #   (the location of the SQLite-backed run history + sensor
+  #   cursors). Named volume so re-creating the container doesn't
+  #   lose the lineage graph.
+  # - The bind-mounted project root makes the asset subprocesses
+  #   (``python -m src.data.<module>``) work without rebuilding.
+  dagster:
+    # We use python:3.12-slim so the asset subprocesses inside the
+    # container run on the same Python version as the host venv
+    # (pyproject.toml pins 3.12). Dagster is installed on first
+    # boot via ``uv pip install`` from the host's already-resolved
+    # ``uv.lock`` — so the SDK version is guaranteed to match.
+    image: python:3.12-slim
+    container_name: priorart-dagster
+    restart: unless-stopped
+    working_dir: /opt/priorart
+    volumes:
+      - .:/opt/priorart
+      - data:/opt/priorart/data
+      - dagster-home:/opt/dagster/dagster_home
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      # Wire the Postgres URL so the asset subprocesses can find
+      # the DB without re-reading the env at runtime. The host is
+      # `postgres` inside the compose network.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-priorart}:${POSTGRES_PASSWORD:-priorart}@postgres:5432/${POSTGRES_DB:-priorart}
+      # The assets call `python -m src.data.<module>` — they need
+      # PYTHONPATH set so `import src.data.scrape_yc` etc. resolve.
+      PYTHONPATH: /opt/priorart/src
+    # Install uv + dagster on first boot, then `uv sync --frozen`
+    # from the bind-mounted lock file (so the SDK version matches
+    # the host's), then `dagster dev` against the definitions
+    # module. This mirrors the API service's `command:` shape.
+    command:
+      - sh
+      - -c
+      - "pip install -q uv && uv sync --frozen && uv run dagster dev -m src.dagster_assets.definitions --port 3000 --host 0.0.0.0"
+    ports:
+      - "${DAGSTER_PORT:-13002}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No healthcheck on dagster dev: the webserver takes 10–30s to
+    # bootstrap (code-server start + asset graph introspection) and
+    # `dagster dev` doesn't expose a /health endpoint. Operators
+    # poll http://localhost:13002 manually after `make dagster-up`.
+
 volumes:
   pgdata:
   data:
   mlflow-data:
+  dagster-home:

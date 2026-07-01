@@ -36,6 +36,12 @@ dependencies = [
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
     "mlflow>=3.14.0",
+    # Dagster (Phase 3.1). The ``dagster`` SDK alone isn't enough for
+    # ``dagster dev`` — that command requires ``dagster-webserver``
+    # too (Dagster split it out as a separate package in 1.7+). The
+    # 1.13.x line is the LTS the project is on (PHASE-3.md §3.1).
+    "dagster>=1.13.11",
+    "dagster-webserver>=1.13.11",
 ]
 
 [project.optional-dependencies]
