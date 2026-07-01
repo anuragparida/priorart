@@ -70,6 +70,63 @@ curl -X POST http://localhost:18000/ideas/analyze \
 # Returns a valid IdeaVerdict JSON
 ```
 
+### Dagster dev-loop (Phase 3+)
+
+Dagster orchestrates the **batch data platform** (corpus ingestion, nightly re-embedding, config-change regression). The per-idea request path still flows through Temporal — the boundary is documented in `docs/ARCHITECTURE.md`.
+
+#### One-time
+
+Dagster ships in the same `docker-compose.yml` as the rest of the stack. No extra setup beyond `docker compose up -d dagster`. The container `priorart-dagster` listens on **13002** (NOT 13000/13001, which belong to the shared Langfuse instance).
+
+#### Daily loop
+
+```bash
+# Start Dagster (Phase 3+) — webserver + daemon + code-server in one process
+make dagster-up
+# First boot: 30-60s (image pull + uv sync + Dagster SDK install + code-server warm-up)
+# Subsequent boots: < 30s (named volume `dagster-home` persists lineage + run history)
+# Open the UI: http://localhost:13002
+
+# Materialize every corpus asset once (cold start / new clone / recovered DB)
+dagster asset materialize --select '*'
+# Or via the UI: Assets → "Materialize all"
+
+# Trigger the nightly re-embedding schedule on demand (without waiting for cron)
+dagster schedule launch nightly_re_embedding
+# The schedule fires nightly_re_embedding_job (excludes eval_benchmark by
+# design — the eval set is a freshness signal, not a corpus node).
+# Or via the UI: Runs → nightly_re_embedding_job → "Launch"
+
+# Verify the nightly schedule is wired
+# UI → Schedules → nightly_re_embedding  (cron: 30 2 * * * UTC)
+```
+
+The 5 assets (`yc_directory`, `product_hunt_archive`, `hn_show_posts`, `company_embeddings`, `eval_benchmark`) are wrapped around the existing Phase 1.2/2.5/2.6/2.7 scrapers as **subprocess materializations** — no scraper rewrite, no second source of truth. `company_embeddings` is idempotent (mtime check vs the latest corpus manifest), so the daily schedule is a no-op when no source refreshed.
+
+#### Config-change regression loop (lands in Phase 3.2)
+
+> **Status:** The sensor (`config_change_sensor`) lands in card **t_877e48cd (Phase 3.2, Perseus)**, currently running. The 3.1 handoff declared the sensor in `src/dagster_assets/__init__.py` as a placeholder but the live sensor + the `config_change_eval_job` it fires are not yet wired into `Definitions`. Don't document them as shipped until 3.2 lands.
+
+Once 3.2 ships, the loop is:
+
+```bash
+# Edit a config
+vim configs/dense_bge_m3.yaml        # bump threshold from 0.7 to 0.75
+
+# Dagster UI → Sensors → config_change_sensor
+# Tick within < 60s (sensor debounces 30s so a multi-file edit = one eval run, not N)
+
+# Dagster UI → Runs → config_change_eval_job
+# Run completes, MLflow run appears (Phase 2.4 already logs every eval.run invocation)
+
+# Verify on the host
+make eval BENCH=evals/labeled_v300.jsonl    # regenerated leaderboard reflects the new sweep
+```
+
+#### Common failure modes (Dagster-specific)
+
+See the row table below for the full Dagster failure-mode inventory. The pattern is consistent: a wrong port, a missing `Definitions` registration, a TTY-bound subprocess, or a stale partition date.
+
 ---
 
 ## Common failure modes
@@ -83,7 +140,12 @@ curl -X POST http://localhost:18000/ideas/analyze \
 | Temporal workflow stuck in "Running" | Activity retry loop on a non-transient error | Check Temporal UI for the activity's error history; add the error type to `non_retryable_error_types` in the retry policy |
 | Langfuse shows no traces | API keys missing or wrong env var | `echo $LANGFUSE_PUBLIC_KEY $LANGFUSE_SECRET_KEY` — both must be set. If the harness redaction filter mangled them, regenerate and paste via the single-line pattern |
 | MLflow shows no runs | Tracking URI wrong | `echo $MLFLOW_TRACKING_URI` — should be `http://localhost:15000` |
-| Dagster assets not materializing | Sensor hasn't fired | Check the sensor's cursor in the Dagster UI; manually trigger via `dagster asset materialize --asset <name>` |
+| Dagster UI unreachable on 13002 | Wrong port, `dagster` service not up, or `langfuse-web` squatting on 13002 | `docker compose ps` → `make dagster-up`. Confirm `models.yaml: dagster.webserver_port` matches `DAGSTER_PORT` in the Makefile (default 13002) |
+| Dagster assets not materializing on click | Asset subprocess exited non-zero, or Dagster hasn't loaded the asset definition | `make dagster-logs` for the traceback; `make dagster-restart` to re-import `src/dagster_assets/`; verify `make dagster-validate` prints `OK: 5 assets, 1 nightly job, 1 @daily schedule all wired up` |
+| "Asset `company_embeddings` is missing partition" | Snapshot date changed (e.g. `data/snapshots/corpus_2026-06-29.jsonl` → `…-07-01.jsonl`) but no backfill ran | UI → Assets → company_embeddings → "Materialize" with the new partition key, or trigger a backfill from the lineage view |
+| Sensor `config_change_sensor` not firing | Workspace not watching `configs/`, or sensor isn't wired into `Definitions` (Phase 3.2 not yet shipped) | Confirm with `make dagster-validate`; once 3.2 lands, the sensor's cursor lives in `$DAGSTER_HOME/sensors/` on the named volume — clear the cursor to force a re-tick |
+| Materialization hangs (no progress for >5 min) | `bge-m3` CPU encoding under TTY pressure (subprocess inherits the controlling terminal) | Run from `script -qc 'dagster job launch nightly_re_embedding_job' /dev/null`, or detach the terminal (`nohup … &`); the asset subprocess must not block on stdin |
+| `eval_benchmark` asset reports stale version | `models.yaml: dagster.eval_benchmark.version` wasn't bumped when `evals/labeled_v300.jsonl` was replaced | Bump the version field; re-materialize the asset; the leaderboard column should follow on the next eval run |
 | Frontend shows CORS error | FastAPI not allowing the frontend origin | Add the frontend URL to the FastAPI CORS middleware allowlist |
 | `make eval` runs but reports MRR=0 | Corpus not loaded | `python -m src.data.ingest --snapshot data/snapshots/yc_<date>.jsonl` |
 | `make eval` runs but reports FPR=1.0 | Threshold too low | Run with `--threshold-sweep` and pick the threshold that maximizes MRR subject to FPR ≤ 0.15 |
@@ -186,26 +248,111 @@ dagster asset materialize --asset <source_name>
 
 ### Temporal: from dev server to a real cluster
 
+**Note:** This path is documented, not built. The repo currently runs `temporal server start-dev` for local development; the section below is "what I would do when I'm ready to ship this for real," not a working deploy.
+
+#### 1. Provision a Postgres 16 instance (separate from the priorart pgvector DB)
+
+The Temporal server needs its own Postgres — do not co-locate it on the `priorart-pgvector` database. pgvector's HNSW index and Temporal's visibility/workflow tables have very different write patterns.
+
 ```bash
-# 1. Stand up a real Temporal cluster (Helm)
-helm repo add temporal https://temporal.github.io/temporal-helm
-helm install temporal temporal/temporal \
-  --set server.config.persistence.driver=sql \
-  --set server.config.persistence.sql.driver=postgres \
-  --set server.config.persistence.sql.host=<postgres-host> \
-  --set cassandra.config.clusterSize=0  # not using Cassandra
+# Provision Postgres 16 (RDS, Cloud SQL, Neon, Supabase, or a self-hosted instance).
+# Then create the two databases Temporal needs:
+psql -h <postgres-host> -U postgres -c "CREATE DATABASE temporal;"
+psql -h <postgres-host> -U postgres -c "CREATE DATABASE temporal_visibility;"
+```
 
-# 2. Create the namespaces
-temporal operator namespace create priorart
-temporal operator namespace create priorart-visibility
+#### 2. Stand up Temporal via the upstream Helm chart
 
-# 3. Update the worker config
-# src/workflow/config.py:
-#    TEMPORAL_ADDRESS = "priorart.<host>.com:7233"
-#    TEMPORAL_NAMESPACE = "priorart"
+Use the [upstream Temporal Helm repo](https://github.com/temporalio/helm-charts):
 
-# 4. Register the worker
-# src/workflow/worker.py runs as a long-lived service
+```bash
+helm repo add temporal https://temporal.github.io/helm-charts
+helm repo update
+```
+
+For a production-grade install, follow the [Temporal Helm production deployment guide](https://docs.temporal.io/self-hosted-guide/kubernetes) — the snippet below is the minimum-viable shape, not a hardened configuration (TLS, mTLS, Elasticsearch visibility, Prometheus metrics, etc. all live outside this snippet). Upstream chart source: <https://github.com/temporalio/helm-charts>.
+
+`values-prod.yaml`:
+
+```yaml
+# Postgres-backed persistence + visibility, Cassandra explicitly disabled.
+# The two SQL stores point at SEPARATE databases on the same Postgres 16
+# instance — Temporal uses one for workflows/history and the other for
+# the visibility store. Co-locating with pgvector is operationally
+# painful (different write patterns, different backup cadence).
+server:
+  config:
+    persistence:
+      driver: "sql"
+      sql:
+        driver: "postgres16"
+        host: "temporal-postgres.internal"
+        database: "temporal"
+        user: "temporal_user"
+    visibility:
+      driver: "sql"
+      sql:
+        driver: "postgres16"
+        host: "temporal-postgres.internal"
+        database: "temporal_visibility"
+        user: "temporal_user"
+    cassandra:
+      clusterSize: 0    # explicitly disable Cassandra
+```
+
+```bash
+helm install temporal temporal/temporal --values values-prod.yaml
+```
+
+#### 3. Create the namespace
+
+The convention is `<project>-<env>` so multiple environments can share one cluster without colliding:
+
+```bash
+temporal operator namespace create priorart-prod \
+  --address temporal.<host>:7233 \
+  --description "PriorArt idea-dedup workflow (production)"
+
+# Register the search attributes this workflow reads
+temporal operator search-attribute create \
+  --name CustomKeywordField \
+  --type Keyword
+# Repeat for every CustomKeywordField / CustomIntField the workflow indexes on.
+```
+
+#### 4. Wire the worker to the new cluster
+
+The worker reads its connection from three env vars (which `src/config.py` already honors); flip them in the deployment manifest, no code change needed:
+
+```bash
+# In the worker's deployment / .env:
+TEMPORAL_ADDRESS=temporal.<host>:7233       # was: 127.0.0.1:7233 (dev server)
+TEMPORAL_NAMESPACE=priorart-prod            # was: default
+TEMPORAL_TASK_QUEUE=priorart-idea-analysis  # same value as the dev-server default; explicit in prod
+# Plus the mTLS certs if the cluster is TLS-terminated:
+TEMPORAL_TLS_CERT=/etc/temporal/ca.pem
+TEMPORAL_TLS_KEY=/etc/temporal/ca.key
+```
+
+```python
+# src/config.py — already honors these three as env-overridable defaults
+TEMPORAL_ADDRESS      = os.getenv("TEMPORAL_ADDRESS",      "127.0.0.1:7233")
+TEMPORAL_NAMESPACE    = os.getenv("TEMPORAL_NAMESPACE",    "default")
+TEMPORAL_TASK_QUEUE   = os.getenv("TEMPORAL_TASK_QUEUE",   "priorart-idea-analysis")
+```
+
+The `src/workflow/worker.py` long-lived process picks these up at start; restart the worker after flipping the env vars. Same shape applies if you want to run it explicitly: `python -m src.workflow.worker --address temporal.<host>:7233 --namespace priorart-prod --task-queue priorart-idea-analysis`.
+
+In the Helm release, the worker runs as a long-lived Deployment (one replica is enough at demo scale; scale `replicas: N` for prod throughput). All worker fleet + UI tctl commands target `priorart-prod` by default.
+
+#### 5. Verify
+
+```bash
+temporal operator namespace describe priorart-prod --address temporal.<host>:7233
+# Expect: Name: priorart-prod, State: Registered, Description: ...
+
+temporal workflow list --query 'WorkflowType="IdeaAnalysisWorkflow"' --limit 5
+# Expect: a healthy history of completed workflows
 ```
 
 ### Postgres: from Docker to a managed instance
@@ -236,7 +383,8 @@ cd src/frontend && pnpm build
 ```bash
 # Langfuse: managed cloud (langfuse.com) or self-host on a real cluster
 # MLflow: managed (Databricks) or self-host on a real cluster
-# Dagster: Dagster Cloud (managed) or self-host
+# Dagster: Dagster Cloud (managed) or self-host via the official
+#   dagster-k8s / dagster-celery-k8s images (docker.io/dagster/*)
 # The decision is operational, not technical — pick based on the operator's preferences
 ```
 
