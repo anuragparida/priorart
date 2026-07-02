@@ -1,4 +1,4 @@
-import type { MarketScope } from '@/lib/api';
+import type { MarketScope, MarketScopeConfidence } from '@/lib/api';
 
 // Market-scope colour tokens (shadcn-aligned; no custom palette).
 // Backend enum lives in src/llm/schemas.py MarketScope — these are
@@ -39,4 +39,86 @@ export function marketScopeClass(scope: MarketScope): string {
     marketScopeConfig[scope]?.className ??
     'bg-secondary text-secondary-foreground border-border'
   );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4.6 — 3-level confidence badge for the new MarketScopeSignal envelope.
+// ---------------------------------------------------------------------------
+//
+// The legacy MarketScope enum (above) is unchanged — the existing direction
+// chip keeps working. Phase 4 adds an *additive* confidence tier the
+// `market_scope_signal` activity computes:
+//
+//   - "directional":    LLM synthesis fallback when the corpus + web layer
+//                       don't settle the direction deterministically. Same
+//                       as the Phase 1.7 stub behaviour — explicit about
+//                       what it is.
+//   - "evidence_backed": >=1 corpus source AND >=1 web source (SearXNG +
+//                        Firecrawl). The 4.4 path populates this tier.
+//   - "quantitative":    the 4.2 deterministic direction rules fired and
+//                        MarketScopeQuant is fully populated. Strongest
+//                        signal we have — `MarketScopeQuant.competitor_count`,
+//                        `recent_3y_count`, `saturation_index`,
+//                        `growth_rate`, `category_distribution` are all real.
+//
+// The frontend falls back to "directional" when the envelope is absent
+// (Phase 1.7/1.8/1.11/2.x/3.x verdict shape) so the badge stays additive
+// and the chip never goes away.
+
+export type ConfidenceTier = MarketScopeConfidence;
+
+export const confidenceConfig: Record<
+  ConfidenceTier,
+  { label: string; className: string; tooltip: string }
+> = {
+  directional: {
+    label: 'directional',
+    className: 'bg-zinc-600/20 text-zinc-300 border-zinc-600/40',
+    tooltip:
+      'LLM synthesis fallback — corpus + web layer didn\'t settle the ' +
+      'direction deterministically. Same confidence as the Phase 1.7 stub.',
+  },
+  evidence_backed: {
+    label: 'evidence-backed',
+    className: 'bg-sky-600/20 text-sky-300 border-sky-600/40',
+    tooltip:
+      'Direction settled with ≥1 corpus source + ≥1 web source. ' +
+      'Hover the supporting evidence list below for the top-3 web sources.',
+  },
+  quantitative: {
+    label: 'quantitative',
+    className: 'bg-emerald-600/20 text-emerald-300 border-emerald-600/40',
+    tooltip:
+      'Direction settled by deterministic corpus rules. MarketScopeQuant is ' +
+      'fully populated — competitor_count, recent_3y_count, ' +
+      'saturation_index, growth_rate, category_distribution are real numbers.',
+  },
+};
+
+export function confidenceLabel(tier: ConfidenceTier): string {
+  return confidenceConfig[tier]?.label ?? tier;
+}
+
+export function confidenceClass(tier: ConfidenceTier): string {
+  return (
+    confidenceConfig[tier]?.className ??
+    'bg-secondary text-secondary-foreground border-border'
+  );
+}
+
+export function confidenceTooltip(tier: ConfidenceTier): string {
+  return confidenceConfig[tier]?.tooltip ?? '';
+}
+
+// Resolve the effective confidence tier from a verdict. Returns "directional"
+// when the 4.1 envelope is absent so the chip is always rendered with a
+// meaningful label — the chip is additive on top of the direction chip, never
+// a replacement.
+export function effectiveConfidence(
+  signal:
+    | { confidence: ConfidenceTier }
+    | null
+    | undefined,
+): ConfidenceTier {
+  return signal?.confidence ?? 'directional';
 }

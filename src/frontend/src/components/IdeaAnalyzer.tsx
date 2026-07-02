@@ -15,7 +15,14 @@ import {
   type AnalyzeErrorBody,
   type IdeaVerdict,
 } from '@/lib/api';
-import { marketScopeClass, marketScopeLabel } from '@/lib/marketScope';
+import {
+  confidenceClass,
+  confidenceLabel,
+  confidenceTooltip,
+  effectiveConfidence,
+  marketScopeClass,
+  marketScopeLabel,
+} from '@/lib/marketScope';
 
 // --- Error-to-message helpers -----------------------------------------------
 
@@ -173,20 +180,132 @@ function CompetitorCard({ c, rank }: { c: IdeaVerdict['top_competitors'][number]
 }
 
 function VerdictPanel({ verdict }: { verdict: IdeaVerdict }) {
+  const confidence = effectiveConfidence(verdict.market_scope_signal);
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle>Market scope</CardTitle>
-            <span
-              className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-semibold ${marketScopeClass(verdict.market_scope)}`}
-            >
-              {marketScopeLabel(verdict.market_scope)}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-semibold ${marketScopeClass(verdict.market_scope)}`}
+              >
+                {marketScopeLabel(verdict.market_scope)}
+              </span>
+              {/*
+                Phase 4.6 — confidence badge sits next to the direction chip.
+                The 4-direction color coding is preserved on the chip; the
+                badge is additive, conveying how the direction was settled:
+                "directional" (LLM fallback, gray), "evidence-backed"
+                (corpus + web, blue), "quantitative" (deterministic rules,
+                green). Falls back to "directional" when the envelope is
+                absent so the chip never goes missing.
+              */}
+              <span
+                title={confidenceTooltip(confidence)}
+                className={`inline-flex cursor-default items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${confidenceClass(confidence)}`}
+                aria-label={`Market-scope confidence: ${confidenceLabel(confidence)}`}
+              >
+                {confidenceLabel(confidence)}
+              </span>
+            </div>
           </div>
           <CardDescription>{verdict.market_scope_rationale}</CardDescription>
         </CardHeader>
+        {verdict.market_scope_signal && (
+          <CardContent className="space-y-3">
+            {verdict.market_scope_signal.quantitative && (
+              <div>
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Corpus stats
+                </h4>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
+                  <div className="flex items-baseline justify-between sm:block">
+                    <dt className="text-muted-foreground">competitors</dt>
+                    <dd className="font-mono">
+                      {verdict.market_scope_signal.quantitative.competitor_count}
+                    </dd>
+                  </div>
+                  <div className="flex items-baseline justify-between sm:block">
+                    <dt className="text-muted-foreground">last 3y</dt>
+                    <dd className="font-mono">
+                      {verdict.market_scope_signal.quantitative.recent_3y_count}
+                    </dd>
+                  </div>
+                  <div className="flex items-baseline justify-between sm:block">
+                    <dt className="text-muted-foreground">saturation</dt>
+                    <dd className="font-mono">
+                      {verdict.market_scope_signal.quantitative.saturation_index.toFixed(2)}
+                    </dd>
+                  </div>
+                  {verdict.market_scope_signal.quantitative.growth_rate != null && (
+                    <div className="flex items-baseline justify-between sm:block">
+                      <dt className="text-muted-foreground">growth</dt>
+                      <dd className="font-mono">
+                        {(
+                          verdict.market_scope_signal.quantitative.growth_rate * 100
+                        ).toFixed(0)}
+                        %
+                      </dd>
+                    </div>
+                  )}
+                  {verdict.market_scope_signal.quantitative.search_volume_proxy !=
+                    null && (
+                    <div className="flex items-baseline justify-between sm:block">
+                      <dt className="text-muted-foreground">web hits</dt>
+                      <dd className="font-mono">
+                        {verdict.market_scope_signal.quantitative.search_volume_proxy}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            )}
+            {verdict.market_scope_signal.evidence.length > 0 && (
+              <div>
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Evidence ({verdict.market_scope_signal.evidence.length})
+                </h4>
+                <ul className="space-y-1 text-sm">
+                  {verdict.market_scope_signal.evidence.map((e, i) => {
+                    if (e.source === 'web' && e.url) {
+                      return (
+                        <li key={`${e.source}-${i}`} className="flex items-baseline gap-2">
+                          <span className="rounded bg-sky-600/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-300">
+                            web
+                          </span>
+                          <a
+                            href={e.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline-offset-4 hover:underline break-all"
+                          >
+                            {e.url}
+                          </a>
+                          {e.snippet && (
+                            <span className="text-xs text-muted-foreground">— {e.snippet}</span>
+                          )}
+                        </li>
+                      );
+                    }
+                    return (
+                      <li key={`${e.source}-${i}`} className="flex items-baseline gap-2">
+                        <span className="rounded bg-emerald-600/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-300">
+                          corpus
+                        </span>
+                        <span className="text-muted-foreground">
+                          company_id={e.company_id}
+                        </span>
+                        {e.snippet && <span className="text-xs">— {e.snippet}</span>}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        )}
         {verdict.supporting_evidence.length > 0 && (
           <CardContent>
             <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

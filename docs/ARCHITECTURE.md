@@ -33,7 +33,11 @@ The diagram above is rendered from `docs/assets/architecture.svg` (also a hand-r
 │     1. embed_idea                  ← bge-m3                     │
 │     2. ann_search                  ← pgvector HNSW               │
 │     3. llm_compare_topk            ← Claude Sonnet 4.5           │
-│     4. market_scope_signal         ← local Qwen 2.5 32B          │
+│     4. market_scope_signal         ← Phase 4 pipeline (4-step):  │
+│        a. corpus density           ← companies + company_embeds   │
+│        b. web augmentation         ← SearXNG → Firecrawl         │
+│        c. LLM synthesis            ← Claude Sonnet 4.5           │
+│        d. envelope assembly        ← market_scope_signal (Pyd.)   │
 │     5. web_fallback_if_empty       ← SearXNG → Firecrawl         │
 │     6. assemble_verdict            ← pure function               │
 │   Signals: human_review (low-confidence verdicts)               │
@@ -148,10 +152,30 @@ class IdeaAnalysisWorkflow:
                     ann_search, web_results,
                     start_to_close_timeout=timedelta(seconds=5),
                 )
-        # Step 6: Market scope + assemble
-        return await workflow.execute_activity(
-            assemble_verdict, (idea, verdicts, top_k),
+        # Step 6: Market scope (Phase 4.2-4.4 — 4-step pipeline)
+        #   a. corpus density: deterministic rules over the top-200
+        #      neighborhood. If they fire, confidence="quantitative" and
+        #      MarketScopeQuant is fully populated.
+        #   b. web augmentation: SearXNG + Firecrawl scrape for the
+        #      sparse directions ("wide_open" / "niche_but_real"). Sets
+        #      confidence="evidence_backed" when ≥1 web source.
+        #   c. LLM synthesis: Claude Sonnet 4.5 emits the rationale + the
+        #      evidence trail, never inventing URLs (per PHASE-4 §Pitfalls).
+        #   d. envelope assembly: pure function merging the steps above
+        #      into market_scope_signal (direction + confidence + evidence
+        #      + optional MarketScopeQuant).
+        market_signal = await workflow.execute_activity(
+            market_scope_signal, (idea, top_k),
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(
+                maximum_attempts=2,
+                non_retryable_error_types=["SchemaViolation"],
+            ),
+        )
+        # Step 7: Assemble final verdict (legacy fields + the new envelope)
+        return await workflow.execute_activity(
+            assemble_verdict, (idea, verdicts, top_k, market_signal),
+            start_to_close_timeout=timedelta(seconds=10),
         )
 
     @workflow.signal
@@ -301,7 +325,7 @@ These are explicit non-goals, listed in `SPEC.md` under "Scope discipline" and r
 - **No multi-tenant.** One operator, one corpus, one leaderboard.
 - **No fine-tuning.** We measure, not adapt.
 - **No real-time ingestion.** Corpus is a snapshot, refreshed nightly.
-- **No production market-scope estimator.** Stub + honest label.
+- **No production market-scope estimator.** Corpus-grounded + SearXNG-augmented (Phase 4); not a SEMrush / SimilarWeb replacement.
 - **No auth.** Self-hosted, single-user.
 - **No real-time Temporal cluster.** `temporal server start-dev` for local. Prod migration path documented in `docs/OPERATIONS.md`.
 
