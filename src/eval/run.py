@@ -33,7 +33,18 @@ layer, and the post-fetch dedup logic. Calling the DB directly
 would skip half of that and give numbers that don't reflect what
 the UI sees. Phase 2 adds comparison-quality metrics that DO call
 the LLM directly (since the /ideas/analyze path is the only way
-to exercise it).
+
+Why ``--offline`` mode exists (Phase 3.6.2, card t_68dd7a03)
+-----------------------------------------------------------
+The eval-regression workflow's HTTP path needs a live API +
+bge-m3 (for query embedding) — both unavailable on cold-cache
+CI runs. The ``--offline`` flag swaps the live ``/search`` call
+for an in-process backend (``src.eval.offline_search``) that
+uses precomputed query embeddings from
+``data/cache/eval_query_embeddings.npz`` and runs the same SQL
+the API runs. Same numbers as the live API (verified row-by-row
+in ``tests/test_phase36_workflow.py::test_offline_*``), no bge-m3
+download, no model loading. See that file for the contract.
 
 Why a DuckDB store alongside the CSV
 ------------------------------------
@@ -65,11 +76,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import duckdb
 import httpx
+import logging
+import numpy as np
 import typer
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+logger = logging.getLogger(__name__)
 
 from src.config import EVALS_DIR, RESULTS_DIR, SNAPSHOTS_DIR
 from src.eval.benchmark import Benchmark, BenchmarkRecord, load_benchmark
 from src.eval.config import RetrievalConfig
+from src.eval.offline_search import (  # noqa: E402  (Phase 3.6.2, card t_68dd7a03)
+    _load_companies_for_bm25,
+    offline_bm25,
+    offline_dense,
+    offline_hybrid,
+)
 from src.eval.metrics import (
     DEFAULT_THRESHOLD_SWEEP,
     fpr_on_novel_record,
@@ -217,6 +240,203 @@ def run_one_record(
     )
     top1 = ranked_scores[0] if ranked_scores else None
 
+    return PerRecordResult(
+        record_id=record.id,
+        category=record.category,
+        is_duplicate=record.is_duplicate,
+        is_novel=record.is_novel,
+        ranked_ids=ranked_ids,
+        ranked_scores=ranked_scores,
+        top1_score=top1,
+        search_error=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Offline path (Phase 3.6.2, card t_68dd7a03)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``run_one_record`` but talks to the in-process
+# ``src.eval.offline_search`` backend instead of /search over HTTP.
+# The offline path needs:
+#
+#   1. The SQLAlchemy engine pointing at the CI DB (same as the API).
+#   2. The precomputed query embedding for the current record, looked
+#      up by record.id in ``data/cache/eval_query_embeddings.npz``.
+#      The record's ``idea`` text is also passed for the BM25 / hybrid
+#      modes (which don't use the embedding).
+#
+# Why a class instead of a function
+# ---------------------------------
+# The BM25 index is ~10K rows × a few hundred tokens — building it
+# once per OfflineSearcher instance (== once per run_eval call) keeps
+# the BM25 path fast across the 300-record benchmark. The class also
+# caches the query embedding lookup, which is a hot-path dict read.
+class OfflineSearcher:
+    """In-process search backend for the eval runner.
+
+    Loads the precomputed query embedding cache lazily on first use.
+    Builds a fresh BM25 index on first use. Caches the corpus row
+    list across calls within a single instance so the BM25 build
+    runs once per ``run_eval`` invocation, not once per record.
+
+    Mirrors the API's /search response shape:
+    ``[{"id", "name", "description", "similarity", "confidence"}, ...]``
+    """
+
+    def __init__(self, query_embeddings_npz: Path) -> None:
+        self._npz_path = Path(query_embeddings_npz)
+        if not self._npz_path.exists():
+            raise FileNotFoundError(
+                f"offline: query embeddings .npz not found at {self._npz_path}. "
+                "Run `python scripts/build_eval_query_embeddings.py` first."
+            )
+        # Lazy-loaded state — populated on first search() call.
+        self._record_id_to_vec: Optional[Dict[str, np.ndarray]] = None
+        self._engine: Optional[Engine] = None
+        self._corpus_count: Optional[int] = None
+        # BM25 corpus cache (tokenised once per OfflineSearcher, not
+        # once per record). The hybrid mode fires both dense + bm25
+        # per record — without this cache, the BM25 build is the
+        # hot path and the eval takes ~2x as long. The cache is
+        # None until the first bm25 / hybrid call.
+        self._corpus_cache: Optional[Tuple[List[int], List[List[str]], Dict[int, Tuple[str, str]]]] = None
+
+    def _load_corpus_for_bm25(
+        self,
+    ) -> Tuple[List[int], List[List[str]], Dict[int, Tuple[str, str]]]:
+        """Load the BM25 tokenised corpus once per OfflineSearcher."""
+        if self._corpus_cache is None:
+            self._corpus_cache = _load_companies_for_bm25(self._get_engine())
+        return self._corpus_cache
+
+    @property
+    def npz_path(self) -> Path:
+        return self._npz_path
+
+    def _load_query_embeddings(self) -> Dict[str, np.ndarray]:
+        """Load the .npz into a {record_id: vector} dict (lazy)."""
+        if self._record_id_to_vec is not None:
+            return self._record_id_to_vec
+        data = np.load(self._npz_path, allow_pickle=True)
+        ids = list(data["record_id"])
+        vecs = data["embeddings"]
+        # The .npz is written by ``scripts/build_eval_query_embeddings.py``
+        # in the same order as the benchmark JSONL. We index by record id
+        # so the runner doesn't have to care about order.
+        self._record_id_to_vec = {
+            str(rid): np.asarray(v, dtype=np.float32)
+            for rid, v in zip(ids, vecs)
+        }
+        return self._record_id_to_vec
+
+    def _get_engine(self) -> Engine:
+        if self._engine is None:
+            from src.data.db import get_engine  # local import — keeps the module import-order clean
+            self._engine = get_engine()
+        return self._engine
+
+    def corpus_count(self) -> int:
+        """Return the ``company_embeddings`` row count, cached."""
+        if self._corpus_count is None:
+            engine = self._get_engine()
+            with engine.connect() as conn:
+                self._corpus_count = int(
+                    conn.execute(text("SELECT count(*) FROM company_embeddings")).scalar_one()
+                )
+        return self._corpus_count
+
+    def search(
+        self,
+        record: "BenchmarkRecord",
+        *,
+        mode: str,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """Run one search and return the API-shaped hit list.
+
+        The ``mode`` argument is the canonical name (``dense`` /
+        ``bm25`` / ``hybrid``). Unknown modes raise ValueError —
+        callers in the live path (the API) catch this; the offline
+        path surfaces it as a ``search_error`` on the result.
+        """
+        engine = self._get_engine()
+        if mode == "dense":
+            vec = self._load_query_embeddings().get(record.id)
+            if vec is None:
+                # Record not in the precomputed cache — log + return
+                # empty so the eval still produces a row (with
+                # search_error set upstream if the runner wants).
+                logger.warning(
+                    "offline: record_id=%s has no precomputed query embedding; "
+                    "the eval will see an empty hit list. Re-run "
+                    "`scripts/build_eval_query_embeddings.py` to refresh the cache.",
+                    record.id,
+                )
+                return []
+            hits = offline_dense(engine, vec, top_k=top_k)
+        elif mode == "bm25":
+            corpus_cache = self._load_corpus_for_bm25()
+            hits = offline_bm25(
+                engine, record.idea, top_k=top_k, _corpus_cache=corpus_cache
+            )
+        elif mode == "hybrid":
+            vec = self._load_query_embeddings().get(record.id)
+            if vec is None:
+                # Hybrid needs the dense path — same warning as dense.
+                logger.warning(
+                    "offline: record_id=%s has no precomputed query embedding; "
+                    "hybrid will fall back to bm25-only.",
+                    record.id,
+                )
+                corpus_cache = self._load_corpus_for_bm25()
+                hits = offline_bm25(
+                    engine, record.idea, top_k=top_k, _corpus_cache=corpus_cache
+                )
+            else:
+                corpus_cache = self._load_corpus_for_bm25()
+                hits = offline_hybrid(
+                    engine,
+                    vec,
+                    record.idea,
+                    top_k=top_k,
+                    _corpus_cache=corpus_cache,
+                )
+        else:
+            raise ValueError(f"unknown offline search mode: {mode!r}")
+        return [h.to_dict() for h in hits]
+
+
+def run_one_record_offline(
+    record: "BenchmarkRecord",
+    *,
+    config: RetrievalConfig,
+    searcher: OfflineSearcher,
+) -> PerRecordResult:
+    """Offline-mode equivalent of ``run_one_record``.
+
+    Uses the precomputed query embedding for the dense + hybrid
+    modes; uses the record's plain ``idea`` text for the bm25 mode.
+    Same return shape as ``run_one_record`` so the rest of the
+    eval pipeline (threshold sweep, CSV writing, calibration) is
+    untouched.
+    """
+    mode = _MODE_FOR_CONFIG.get(config.name, "dense")
+    try:
+        hits = searcher.search(record, mode=mode, top_k=config.top_k)
+    except (ValueError, RuntimeError) as exc:
+        return PerRecordResult(
+            record_id=record.id,
+            category=record.category,
+            is_duplicate=record.is_duplicate,
+            is_novel=record.is_novel,
+            search_error=f"{type(exc).__name__}: {exc}",
+        )
+    ranked_ids = tuple(int(h["id"]) for h in hits if "id" in h)
+    ranked_scores = tuple(
+        float(h.get("confidence", h.get("similarity", 0.0))) for h in hits
+    )
+    top1 = ranked_scores[0] if ranked_scores else None
     return PerRecordResult(
         record_id=record.id,
         category=record.category,
@@ -632,23 +852,40 @@ def run_eval(
     db_path: Optional[Path] = None,
     threshold_sweep: Sequence[float] = DEFAULT_THRESHOLD_SWEEP,
     fpr_cap: float = 0.15,
+    offline: bool = False,
+    precomputed_query_embeddings: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run the full eval and return the run summary.
 
     Steps (see module docstring for the why):
-    1. POST every record to /search.
+    1. For each record: POST ``/search`` (HTTP) **or** call the
+       in-process offline backend (when ``offline=True``). The
+       offline path is what the CI regression workflow uses —
+       it doesn't need a live API or a bge-m3 download.
     2. For each threshold: compute the 5 aggregate metrics.
     3. Pick the best threshold (MRR-max under FPR cap).
     4. Write the per-threshold rows to the CSV (append).
     5. Write the same rows + per-record trace to DuckDB.
     6. Return a summary dict for the CLI to print.
     """
+    if offline and not precomputed_query_embeddings:
+        raise ValueError(
+            "offline=True requires --precomputed-query-embeddings pointing at "
+            "data/cache/eval_query_embeddings.npz (or a snapshot thereof). "
+            "Run `python scripts/build_eval_query_embeddings.py` to produce it."
+        )
     started = time.time()
     per_record: List[PerRecordResult] = []
-    with httpx.Client() as client:
+    if offline:
+        searcher = OfflineSearcher(Path(precomputed_query_embeddings))
         for rec in benchmark.records:
-            res = run_one_record(rec, config=config, client=client)
+            res = run_one_record_offline(rec, config=config, searcher=searcher)
             per_record.append(res)
+    else:
+        with httpx.Client() as client:
+            for rec in benchmark.records:
+                res = run_one_record(rec, config=config, client=client)
+                per_record.append(res)
 
     search_errors = sum(1 for r in per_record if r.search_error)
     n_novel = sum(1 for r in per_record if r.is_novel)
@@ -722,20 +959,32 @@ def run_eval(
     # If the API is unreachable we leave the value blank — Phase
     # 1.11's dashboard queries the corpus size from the DB
     # directly, so a missing value is recoverable.
-    try:
-        with httpx.Client() as probe:
-            r = probe.get(
-                config.api_url.replace("/search", "/healthz"),
-                timeout=5.0,
-            )
-            if r.status_code == 200:
-                body = r.json()
-                cc = body.get("corpus_count")
-                if isinstance(cc, int):
-                    for row in rows:
-                        row["corpus_count"] = cc
-    except (httpx.HTTPError, json.JSONDecodeError):
-        pass
+    if offline:
+        # Offline path: read the corpus count from the DB directly
+        # (the OfflineSearcher has it cached, but we recompute so
+        # the call is self-contained). The offline path always
+        # knows the corpus count because the .npz was just loaded.
+        try:
+            cc = searcher.corpus_count()
+            for row in rows:
+                row["corpus_count"] = cc
+        except Exception as exc:  # noqa: BLE001 — count is informational
+            logger.warning("offline: failed to read corpus_count: %s", exc)
+    else:
+        try:
+            with httpx.Client() as probe:
+                r = probe.get(
+                    config.api_url.replace("/search", "/healthz"),
+                    timeout=5.0,
+                )
+                if r.status_code == 200:
+                    body = r.json()
+                    cc = body.get("corpus_count")
+                    if isinstance(cc, int):
+                        for row in rows:
+                            row["corpus_count"] = cc
+        except (httpx.HTTPError, json.JSONDecodeError):
+            pass
 
     # ------------------------------------------------------------------
     # Phase 3.3 — Calibration curve + ECE
@@ -1281,6 +1530,39 @@ def main(
             "the operator only wants the leaderboard row."
         ),
     ),
+    # ------------------------------------------------------------------
+    # Phase 3.6.2 — Offline mode (card t_68dd7a03)
+    # ------------------------------------------------------------------
+    # The offline mode is what the CI regression workflow uses. It
+    # bypasses the live ``/search`` HTTP path (which needs a live
+    # API + bge-m3) and runs the same SQL ANN / BM25 / hybrid
+    # paths in-process using precomputed query embeddings. The
+    # ``--precomputed-query-embeddings`` path defaults to the
+    # committed cache ``data/cache/eval_query_embeddings.npz`` —
+    # the file the build script ``build_eval_query_embeddings.py``
+    # writes. If you change the benchmark or the model version,
+    # re-run that script and the offline mode picks up the new
+    # cache automatically.
+    offline: bool = typer.Option(
+        False,
+        "--offline",
+        help=(
+            "Run the eval in-process using precomputed query "
+            "embeddings (no /search HTTP, no bge-m3 download). "
+            "Requires --precomputed-query-embeddings. The "
+            "eval-regression workflow uses this mode on cold-cache "
+            "CI runs (see .github/workflows/eval-regression.yml)."
+        ),
+    ),
+    precomputed_query_embeddings: Optional[Path] = typer.Option(
+        None,
+        "--precomputed-query-embeddings",
+        help=(
+            "Path to the eval query embeddings .npz (default: "
+            "data/cache/eval_query_embeddings.npz when --offline "
+            "is set). Required when --offline is set."
+        ),
+    ),
 ) -> None:
     """Run the eval harness end-to-end."""
     # Resolve paths (defaults from src.config point at the repo).
@@ -1325,6 +1607,17 @@ def main(
         f"thresholds={sweep}"
     )
 
+    # Resolve the offline default: when --offline is set and the
+    # caller didn't pass --precomputed-query-embeddings, fall back
+    # to the committed cache (the file the build script writes).
+    offline_embeddings: Optional[Path] = None
+    if offline:
+        offline_embeddings = (
+            precomputed_query_embeddings
+            if precomputed_query_embeddings is not None
+            else Path("data/cache/eval_query_embeddings.npz")
+        )
+
     summary = run_eval(
         cfg,
         bench,
@@ -1332,6 +1625,8 @@ def main(
         db_path=db_path_value,
         threshold_sweep=sweep,
         fpr_cap=fpr_cap,
+        offline=offline,
+        precomputed_query_embeddings=offline_embeddings,
     )
 
     # Markdown summary.

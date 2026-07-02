@@ -1,4 +1,5 @@
 # Phase 3.6 — Eval-regression workflow (card t_e0f62c2a)
+# Phase 3.6.2 — Offline mode (card t_68dd7a03)
 #
 # What this does
 # ---------------
@@ -22,6 +23,21 @@
 #   * Committed corpus snapshots only (PHASE-3.md §Pitfall). The
 #     workflow reads ``data/snapshots/*.jsonl`` and never hits a
 #     live scraper / Algolia / Wayback / Firecrawl.
+#
+# Why no bge-m3 download (Phase 3.6.2, card t_68dd7a03):
+#   * The cold-cache Actions runner can't restore the 2.3 GB
+#     actions/cache key (HTTP 400) and can't download from
+#     HuggingFace (OSError on the network). We pre-baked two
+#     .npz files in data/cache/:
+#       - corpus_embeddings.npz        — the (company_id,
+#         chunk_index) -> 1024-dim vector table; bulk-loaded
+#         into Postgres by load_corpus_embeddings.py.
+#       - eval_query_embeddings.npz    — the 300-record
+#         bge-m3 embedding matrix for labeled_v300.jsonl; read
+#         by src.eval.offline_search.
+#     The eval runner talks to Postgres directly via
+#     ``src.eval.offline_search`` — no live API, no model files
+#     touch the runner at all.
 #
 # Why we re-build the corpus in CI rather than baking a DB image:
 #   * Reproducibility — the snapshot files are the source of truth,
@@ -69,6 +85,12 @@ on:
       - "uv.lock"
       - ".github/workflows/eval-regression.yml"
       - "scripts/ci/**"
+      # Phase 3.6.2 (card t_68dd7a03): the workflow bulk-loads
+      # a pre-baked corpus_embeddings.npz, so a change to the
+      # build script that produces it should re-run the gate.
+      - "scripts/build_corpus_embeddings_npz.py"
+      - "scripts/build_eval_query_embeddings.py"
+      - "data/cache/**"
   push:
     branches: [main]
     paths:
@@ -82,6 +104,9 @@ on:
       - "uv.lock"
       - ".github/workflows/eval-regression.yml"
       - "scripts/ci/**"
+      - "scripts/build_corpus_embeddings_npz.py"
+      - "scripts/build_eval_query_embeddings.py"
+      - "data/cache/**"
   schedule:
     # Nightly at 06:00 UTC. Picks up regressions that don't touch
     # a watched path (e.g. a base-image upgrade that changes the
@@ -103,13 +128,17 @@ permissions:
 # Cache the bge-m3 model + the uv cache between runs. First run
 # pays the ~2GB model download; subsequent runs reuse it.
 env:
-  HF_HOME: ${{ github.workspace }}/.cache/huggingface
-  TRANSFORMERS_CACHE: ${{ github.workspace }}/.cache/huggingface
+  # No HF_HOME / TRANSFORMERS_CACHE: Phase 3.6.2 (card t_68dd7a03)
+  # moved the eval off the bge-m3 download path entirely. The
+  # cold-cache Actions runner couldn't restore the 2.3GB model
+  # cache (HTTP 400 from actions/cache) and couldn't download it
+  # either (OSError from HuggingFace), so we ship precomputed
+  # query embeddings under data/cache/ and bulk-load the corpus
+  # embeddings from a committed .npz instead. No model files
+  # touch the runner at all.
   PYTHONPATH: ${{ github.workspace }}
-  # Disable any external-network defaults the runner might inherit.
-  # The eval is offline by design (see PHASE-3.md §Pitfalls).
-  HF_HUB_OFFLINE: "0"
-  TRANSFORMERS_OFFLINE: "0"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
 
 jobs:
   eval-regression:
@@ -163,13 +192,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Cache bge-m3 model
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.HF_HOME }}
-          key: bge-m3-v1-${{ hashFiles('src/data/embedder.py', 'pyproject.toml') }}
-          restore-keys: |
-            bge-m3-v1-
+      # Phase 3.6.2 (card t_68dd7a03): the bge-m3 cache step is
+      # gone. The cold-cache Actions runner couldn't restore the
+      # 2.3 GB cache (HTTP 400 from actions/cache) and couldn't
+      # download the model either (OSError from HuggingFace).
+      # The eval is now fully offline — see the
+      # "Build corpus from committed .npz" step below.
 
       - name: uv sync
         run: |
@@ -209,66 +237,70 @@ jobs:
           print('schema + vector extension initialised')
           "
 
-      - name: Build corpus from committed snapshots
+      - name: Build corpus from committed .npz
         env:
           DATABASE_URL: postgresql+psycopg://priorart:priorart@localhost:15433/priorart
         run: |
-          # Self-contained regression: the corpus is built from
-          # the committed JSONL snapshots, never a live scraper.
-          # The full build_corpus() takes ~3-4h on CI's bge-m3
-          # CPU; for the regression we only need the embeddings
-          # re-built for the 3 configs' lookup table, which is
-          # what corpus_build produces. See the bge-m3 cache step
-          # above for the first-run cost.
-          uv run python -m src.data.corpus_build --no-embed || true
-          # Embed in a second pass (bge-m3 CPU ~30 min for 11K rows
-          # on the CI runner; longer on the 4-core hosted runners).
-          uv run python -m src.data.corpus_build
-        # corpus_build is idempotent: re-running on the same JSONL
-        # snapshots is a no-op on the (source, external_id) and
-        # (company_id, model_version, chunk_index) unique
-        # constraints, so the embed pass picks up where the
-        # previous run left off.
+          # Phase 3.6.2 (card t_68dd7a03): the previous
+          # ``make corpus-build`` step downloaded bge-m3 from
+          # HuggingFace (~2.3 GB) and re-embedded the entire
+          # 11K-row corpus on the runner (~30 min of CPU). The
+          # cold-cache runner can't do either. Instead, we
+          # bulk-load the (company_id, chunk_index) -> 1024-dim
+          # vector table from a pre-baked .npz that's committed
+          # to the repo under data/cache/corpus_embeddings.npz
+          # (built once on a maintainer's machine by
+          # scripts/build_corpus_embeddings_npz.py).
+          #
+          # The .npz is keyed by a snapshot hash — the bulk-load
+          # refuses to load a .npz whose snapshot hash doesn't
+          # match the current data/snapshots/ state, so a stale
+          # cache can't silently pass.
+          #
+          # Companies (metadata) are still loaded from the
+          # committed snapshots in the next step — the .npz is
+          # just the embedding table.
+          uv run python -m src.data.corpus_build --no-embed
 
-      - name: Start API (background)
+      - name: Bulk-load precomputed corpus embeddings
         env:
           DATABASE_URL: postgresql+psycopg://priorart:priorart@localhost:15433/priorart
         run: |
-          # The eval runner POSTs /search — the API must be live
-          # on 18001 (the same port the local Makefile target
-          # uses; the CI container has no port-squatting
-          # conflicts with clausecraft's 18000).
-          nohup uv run uvicorn src.api.app:app --host 0.0.0.0 --port 18001 \
-            > /tmp/priorart-api.log 2>&1 &
-          echo $! > /tmp/priorart-api.pid
-          for i in $(seq 1 60); do
-            if curl -fsS http://localhost:18001/healthz > /dev/null 2>&1; then
-              echo "API up after ${i}s"
-              curl -sS http://localhost:18001/healthz
-              echo
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "API did not come up within 60s; tail of log:"
-          tail -50 /tmp/priorart-api.log
-          exit 1
+          # Bulk-load the pre-baked .npz into company_embeddings.
+          # Idempotent on (company_id, model_version, chunk_index)
+          # so re-running on the same .npz is a no-op. Refuses
+          # to load a .npz whose model_version doesn't match the
+          # API's configured EMBEDDING_MODEL.
+          uv run python -m src.data.load_corpus_embeddings \
+            --npz data/cache/corpus_embeddings.npz
 
-      - name: Run 3-config eval sweep
+      # NOTE: there's no "Start API (background)" step in offline
+      # mode — the eval runner talks to Postgres directly via
+      # src.eval.offline_search, not to /search over HTTP. Saves
+      # ~5s of API startup + eliminates the 60s wait-for-healthz
+      # race.
+
+      - name: Run 3-config eval sweep (offline)
         env:
           DATABASE_URL: postgresql+psycopg://priorart:priorart@localhost:15433/priorart
         run: |
-          # The sweep driver writes to results/leaderboard.csv
-          # (append mode — same CSV the local `make eval` writes
-          # to). 3 configs, ~5 min total on CI for the 300-record
-          # benchmark (the per-record latency is dominated by
-          # the API's bge-m3 + BM25 paths).
+          # Phase 3.6.2 (card t_68dd7a03): ``--offline`` swaps
+          # the live ``/search`` HTTP path for the in-process
+          # ``src.eval.offline_search`` backend, which uses the
+          # precomputed query embeddings in
+          # data/cache/eval_query_embeddings.npz. Numbers match
+          # the live API row-by-row (verified in
+          # tests/test_phase36_workflow.py::test_offline_*);
+          # the ~50s sweep time replaces the ~5min bge-m3 CPU
+          # embed + 3-config HTTP sweep.
           uv run python scripts/ci/run_eval_sweep.py \
             --benchmark evals/labeled_v300.jsonl \
             --output results/leaderboard.csv \
             --db results/eval.duckdb \
             --markdown-out results/leaderboard.md \
-            --no-mlflow
+            --no-mlflow \
+            --offline \
+            --eval-query-embeddings-npz data/cache/eval_query_embeddings.npz
 
       - name: Re-render leaderboard screenshots
         run: |
@@ -390,12 +422,10 @@ jobs:
             results/leaderboard.md
             /tmp/leaderboard_diff.md
             /tmp/eval_gate.md
-            /tmp/priorart-api.log
           retention-days: 14
 
-      - name: Stop API
-        if: always()
-        run: |
-          if [ -f /tmp/priorart-api.pid ]; then
-            kill "$(cat /tmp/priorart-api.pid)" 2>/dev/null || true
-          fi
+      # NOTE: there's no "Stop API" step in offline mode — the
+      # API process is never started by this job. The previous
+      # "Start API (background)" + "Stop API" pair was retired in
+      # Phase 3.6.2 (card t_68dd7a03) along with the bge-m3
+      # download.

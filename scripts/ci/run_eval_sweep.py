@@ -33,6 +33,26 @@ Hard rules respected
   labeled benchmark — the workflow pins ``evals/labeled_v300.jsonl``
   as the regression contract.
 
+Offline mode (Phase 3.6.2, card t_68dd7a03)
+------------------------------------------
+The eval-regression workflow can't download bge-m3 on a cold-cache
+runner (the actions/cache backend rejects the 2.3GB cache key
+with HTTP 400, and the HF download trips ``OSError``). The fix is
+``--offline`` mode in ``eval.run``: it bypasses the live ``/search``
+HTTP path and runs the same SQL ANN / BM25 / hybrid paths in-process
+using precomputed query embeddings. This sweep driver turns that on
+when the workflow asks for it (``--offline`` is the default in CI;
+``make eval-sweep`` defaults to off so local reproduction matches
+the live API path).
+
+When ``--offline`` is set, ``build_cmd`` adds two more flags to the
+``eval.run`` invocation:
+
+* ``--offline`` — toggles the in-process path on.
+* ``--precomputed-query-embeddings PATH`` — points at the
+  ``data/cache/eval_query_embeddings.npz`` symlink the
+  ``scripts/build_eval_query_embeddings.py`` build step produces.
+
 CLI
 ---
 ::
@@ -77,6 +97,25 @@ SWEEP_CONFIGS: Sequence[Path] = (
 # in 3.5, ECE in 3.3). The workflow pins this explicitly via the
 # --benchmark flag so the path can't drift.
 DEFAULT_BENCHMARK: Path = Path("evals/labeled_v300.jsonl")
+
+# Phase 3.6.2 (card t_68dd7a03) — the offline mode needs two
+# committed artifacts on disk:
+#   * corpus_embeddings.npz  — the pre-baked (company_id, chunk_index)
+#     -> 1024-dim vector table for the committed corpus snapshots.
+#     Built once on a maintainer's machine by
+#     ``scripts/build_corpus_embeddings_npz.py`` and committed.
+#     The workflow bulk-loads it into a fresh CI DB with
+#     ``python -m src.data.load_corpus_embeddings``.
+#   * eval_query_embeddings.npz  — the 300-record query-embedding
+#     matrix (labeled_v300.jsonl idea fields, bge-m3). Built once
+#     on a maintainer's machine by
+#     ``scripts/build_eval_query_embeddings.py`` and committed.
+#     The eval runner reads it on every record to skip the bge-m3
+#     download in CI.
+# Both files live under data/cache/ and are committed alongside
+# the yc_name_embeddings.npz already on disk (Phase 2.5).
+DEFAULT_CORPUS_EMBEDDINGS_NPZ: Path = Path("data/cache/corpus_embeddings.npz")
+DEFAULT_EVAL_QUERY_EMBEDDINGS_NPZ: Path = Path("data/cache/eval_query_embeddings.npz")
 
 # Substring gate: any config file whose path contains one of these
 # substrings is refused unless explicitly opted in via
@@ -196,6 +235,52 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "paying the eval cost."
         ),
     )
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "Run the eval in offline mode (card t_68dd7a03): "
+            "bypass the live /search HTTP path and use precomputed "
+            "query embeddings instead, so the runner never has to "
+            "download bge-m3 from HuggingFace. Defaults to true "
+            "in CI because the cold-cache runner can't download the "
+            "model — see .github/workflows/eval-regression.yml for "
+            "the cold-cache path. Local ``make eval-sweep`` defaults "
+            "to off so the numbers match the live API exactly."
+        ),
+    )
+    p.add_argument(
+        "--online",
+        action="store_true",
+        help=(
+            "Explicitly turn offline mode OFF (the default already "
+            "is OFF when ``--offline`` is not passed). Exists so a "
+            "shell script can do ``--online`` without having to "
+            "know the default polarity; the workflow ignores it."
+        ),
+    )
+    p.add_argument(
+        "--corpus-embeddings-npz",
+        type=Path,
+        default=DEFAULT_CORPUS_EMBEDDINGS_NPZ,
+        help=(
+            "Path to the pre-baked corpus embeddings .npz "
+            "(default: data/cache/corpus_embeddings.npz). "
+            "Bulk-loaded into the CI Postgres by the workflow's "
+            "``Build corpus`` step before this script runs."
+        ),
+    )
+    p.add_argument(
+        "--eval-query-embeddings-npz",
+        type=Path,
+        default=DEFAULT_EVAL_QUERY_EMBEDDINGS_NPZ,
+        help=(
+            "Path to the precomputed eval query embeddings .npz "
+            "(default: data/cache/eval_query_embeddings.npz). "
+            "Used by ``eval.run --offline`` to skip the bge-m3 "
+            "download in CI."
+        ),
+    )
     return p.parse_args(list(argv) if argv is not None else None)
 
 
@@ -213,11 +298,25 @@ def build_cmd(
     markdown_out: Path | None,
     mlflow_tracking_uri: str,
     no_mlflow: bool,
+    offline: bool = False,
+    eval_query_embeddings_npz: Optional[Path] = None,
 ) -> list[str]:
     """Build the ``python -m eval.run`` command for one config.
 
     Pure (no I/O) — every argument is a function input. Unit tests
     assert on the exact command list.
+
+    When ``offline`` is True, two flags are added so ``eval.run`` skips
+    the live ``/search`` HTTP path and uses the precomputed query
+    embeddings instead:
+
+    * ``--offline`` — toggles the in-process path on.
+    * ``--precomputed-query-embeddings PATH`` — points at the
+      ``data/cache/eval_query_embeddings.npz`` file.
+
+    The workflow always passes ``offline=True`` because the cold-cache
+    runner can't download bge-m3; local ``make eval-sweep`` callers
+    pass ``offline=False`` so the numbers match the live API.
     """
     cmd = [
         sys.executable,
@@ -240,6 +339,12 @@ def build_cmd(
         )
     if no_mlflow:
         cmd.append("--no-mlflow")
+    if offline:
+        cmd.append("--offline")
+        if eval_query_embeddings_npz is not None:
+            cmd.extend(
+                ["--precomputed-query-embeddings", str(eval_query_embeddings_npz)]
+            )
     return cmd
 
 
@@ -254,11 +359,27 @@ def run_one(
     contract is that one failed config fails the sweep (we don't
     keep going; an MRR/FPR gate is meaningless if half the data
     is missing).
+
+    The subprocess inherits ``PYTHONPATH`` + ``VIRTUAL_ENV`` from
+    the parent so a caller that set up the venv site-packages via
+    the priorart broken-venv workaround (see the
+    ``priorart-broken-venv-workaround`` skill) doesn't have to do
+    anything special — the subprocess sees the same site-packages
+    the parent does. The ``PYTHONPATH`` we set *prepends* the
+    repo root (so ``-m eval.run`` resolves the local package),
+    and *keeps* the inherited PYTHONPATH (so the venv site-packages
+    stay visible).
     """
+    parent_pp = os.environ.get("PYTHONPATH", "")
+    if parent_pp:
+        merged_pp = f"{cwd}{os.pathsep}{parent_pp}"
+    else:
+        merged_pp = str(cwd)
+    inherited = {k: v for k, v in os.environ.items() if k in {"VIRTUAL_ENV"}}
     return subprocess.run(
         list(cmd),
         cwd=str(cwd),
-        env={**os.environ, "PYTHONPATH": str(cwd)},
+        env={**inherited, "PYTHONPATH": merged_pp},
         capture_output=True,
         text=True,
         check=False,
@@ -313,6 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"[sweep] benchmark={benchmark.name} output={output.name} "
         f"db={'none' if db is None else db.name} "
         f"no_mlflow={no_mlflow} "
+        f"offline={args.offline} "
         f"configs={[str(c) for c in SWEEP_CONFIGS]}"
     )
 
@@ -334,6 +456,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             markdown_out=args.markdown_out,
             mlflow_tracking_uri=mlflow_uri,
             no_mlflow=no_mlflow,
+            offline=args.offline,
+            eval_query_embeddings_npz=args.eval_query_embeddings_npz,
         )
         if args.dry_run:
             print(f"[sweep] DRY: would run: {' '.join(cmd)}")

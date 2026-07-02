@@ -132,6 +132,38 @@ eval-sweep: ## Phase 3.6 — run the 3-config eval sweep (dense + bm25 + hybrid_
 		--db results/eval.duckdb \
 		--markdown-out results/leaderboard.md
 
+# Phase 3.6.2 (card t_68dd7a03) — offline-mode variant of the
+# sweep. Uses precomputed query embeddings + in-process search,
+# so it doesn't need a live API or bge-m3 download. The CI
+# eval-regression workflow uses this variant on cold-cache runs;
+# the online variant above is for local reproduction against
+# the live API.
+eval-sweep-offline: ## Phase 3.6.2 — offline-mode eval sweep (uses precomputed query embeddings; no live API, no bge-m3).
+	$(PY) scripts/ci/run_eval_sweep.py \
+		--benchmark evals/labeled_v300.jsonl \
+		--output results/leaderboard.csv \
+		--db results/eval.duckdb \
+		--markdown-out results/leaderboard.md \
+		--no-mlflow \
+		--offline \
+		--eval-query-embeddings-npz data/cache/eval_query_embeddings.npz
+
+# Phase 3.6.2 (card t_68dd7a03) — build the two committed
+# .npz caches the offline mode depends on. Run once on a
+# maintainer's machine after a snapshot / model version
+# change; commit the resulting files under data/cache/.
+build-corpus-embeddings-npz: ## Phase 3.6.2 — write data/cache/corpus_embeddings.npz from the live DB.
+	$(PY) scripts/build_corpus_embeddings_npz.py
+build-eval-query-embeddings: ## Phase 3.6.2 — write data/cache/eval_query_embeddings.npz from labeled_v300.jsonl.
+	$(PY) scripts/build_eval_query_embeddings.py
+
+# Phase 3.6.2 (card t_68dd7a03) — bulk-load the corpus
+# embeddings .npz into the current Postgres (CI uses this on
+# a fresh DB).
+load-corpus-embeddings: ## Phase 3.6.2 — bulk-load data/cache/corpus_embeddings.npz into company_embeddings.
+	$(PY) -m src.data.load_corpus_embeddings \
+		--npz data/cache/corpus_embeddings.npz
+
 .PHONY: eval-gate
 # Phase 3.6 — read the post-sweep leaderboard.csv and exit non-zero
 # if hybrid_rrf's selected row crosses the regression thresholds
