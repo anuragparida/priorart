@@ -213,20 +213,30 @@ def find_selected_row(
     *,
     config: str,
 ) -> dict[str, str] | None:
-    """Return the first row where ``config`` matches and
+    """Return the last row where ``config`` matches and
     ``selected_threshold`` is truthy.
 
     The eval runner writes exactly one ``selected_threshold=True``
     row per (config, benchmark) pair — the threshold the best-
     threshold picker landed on. We use that row as the canonical
     "the system picked this threshold for this config" reading.
+
+    **Last** match wins, not first. The runner appends to the
+    leaderboard CSV; if a re-run produces a different
+    selected_threshold row for the same config (e.g. after a
+    corpus re-build, or after the per-record set changed), the
+    newer row replaces the older one in the "what does the
+    system think now" reading. The older row is *not* deleted —
+    it's left in the CSV as an audit trail — but the gate
+    inspects the latest one.
     """
+    last: dict[str, str] | None = None
     for row in rows:
         if row.get("config") != config:
             continue
         if _coerce_bool(row.get("selected_threshold", "")):
-            return row
-    return None
+            last = row
+    return last
 
 
 def evaluate_rows(

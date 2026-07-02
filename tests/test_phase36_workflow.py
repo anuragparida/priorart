@@ -341,6 +341,39 @@ def test_gate_only_inspects_watched_config() -> None:
     assert result.passed is True
 
 
+def test_find_selected_row_picks_last_when_csv_has_history() -> None:
+    """The eval runner appends to the leaderboard CSV. If a re-run
+    produces a *new* selected_threshold=True row for the same
+    config (e.g. after a corpus re-build), the older row is left
+    in the CSV as audit trail. ``find_selected_row`` must return
+    the **last** match (the freshest run), not the first — a
+    gate that inspects stale data is a gate that false-positives
+    on the current main and false-negatives on regressions.
+
+    This is a real bug observed in the current main's committed
+    leaderboard.csv: hybrid_rrf has two selected rows (a stale
+    one with search_errors=286 and a fresh one with
+    search_errors=0). The first-match version of the helper
+    returned the stale one and reported MRR=0.1; the correct
+    fresh row is MRR=0.458.
+    """
+    rows = [
+        # Older run: API was down, search_errors=286, MRR=0.1.
+        _row("hybrid_rrf", 0.8, 0.1, 0.25, selected=True),
+        # Fresh run: API was up, search_errors=0, MRR=0.458.
+        _row("hybrid_rrf", 0.8, 0.458, 0.63, selected=True),
+    ]
+    sel = eval_gate.find_selected_row(rows, config="hybrid_rrf")
+    assert sel is not None
+    assert float(sel["mrr"]) == 0.458
+    assert float(sel["fpr_on_novel"]) == 0.63
+    # The gate's verdict also uses the last match, not the first.
+    result = eval_gate.evaluate_rows(rows)
+    assert result.passed is True
+    assert result.selected_row is not None
+    assert result.selected_row.mrr == 0.458
+
+
 # ---------------------------------------------------------------------------
 # Diff pure function — synthetic CSV inputs
 # ---------------------------------------------------------------------------
