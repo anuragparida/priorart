@@ -53,12 +53,49 @@ are the remaining gates.
 
 ## Demo
 
-<!-- asciinema embed here -->
+The 2-minute end-to-end screen capture lives at
+[`docs/assets/demo.cast`](docs/assets/demo.cast) (5.9 KB, asciinema v2 format,
+35-second playback at `--idle-time-limit 3`). It walks through:
 
-A 2-minute screen capture of the full flow — `make eval` runs the harness,
-`pnpm dev` starts the frontend, paste an idea, see ranked competitors +
-structured verdicts + the Temporal + Langfuse UI behind them. Recorded with
-`asciinema rec`, embedded by the 3.8 card.
+1. `eval.run` against a 25-record stratified slice of `labeled_v300.jsonl`
+   (the full 300-record run takes ~75s; the slice keeps the demo under 2
+   minutes while exercising the same code path).
+2. `POST /search` for the demo idea "AI-powered contract review for SMB
+   law firms." — returns the ranked YC + Product Hunt + HN competitors
+   (Dioptra, Skope, Ironclad, PointOne, Adaptional) with similarity and
+   confidence.
+3. `POST /ideas/analyze` — starts an `IdeaAnalysisWorkflow` on Temporal;
+   polls `/workflows/{id}` until the workflow reaches a terminal state and
+   prints the result. The demo's LLM step fails with `MissingAPIKeyError`
+   because no Anthropic key is configured on the recording host — this is
+   the honest production failure mode; the workflow trace + activity error
+   are the demo's observability story.
+4. The cumulative `results/leaderboard.csv` (real numbers from the Phase
+   2.9 / 3.3 / 3.5 runs on `labeled_v300.jsonl`).
+5. The operator UIs (Frontend / Dagster / MLflow / Temporal Web).
+
+**Play it locally:**
+
+```bash
+asciinema play docs/assets/demo.cast
+```
+
+**Or upload to asciinema.org** (requires an `ASCIINEMA_API_TOKEN` env var)
+to get a shareable embed:
+
+```bash
+ASCIINEMA_API_TOKEN=... asciinema upload docs/assets/demo.cast
+# Then paste the returned id into the script tag below.
+```
+
+```html
+<!-- TODO after upload: paste the asciinema id here, e.g.
+     <script src="https://asciinema.org/a/<id>.js"
+             id="asciicast-<id>" async="true"></script> -->
+```
+
+The cast is recorded by [`scripts/demo.sh`](scripts/demo.sh); the header
+documents that it is for demo recording only, not for CI / regression.
 
 ---
 
