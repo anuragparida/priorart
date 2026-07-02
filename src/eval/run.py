@@ -74,6 +74,7 @@ from src.eval.metrics import (
     DEFAULT_THRESHOLD_SWEEP,
     fpr_on_novel_record,
     ndcg_at_k,
+    novel_set_positive_rate,
     pick_best_threshold,
     precision_at_k,
     recall_at_k,
@@ -88,7 +89,9 @@ from src.eval.mlflow_logger import (
 from src.eval.calibration import (
     bin_predictions as bin_predictions_calibration,
     compute_ece as compute_ece_metric,
+    fpr_on_novel_breakdown as fpr_breakdown,
     plot_calibration as plot_calibration_curve,
+    plot_fpr_breakdown as plot_fpr_breakdown_curve,
 )
 
 
@@ -105,6 +108,14 @@ from src.eval.calibration import (
 # eval-set's label distribution, not the threshold sweep. We still
 # write one ``ece`` value per row so the CSV is uniform (the
 # downstream reader doesn't need a separate row key).
+#
+# Phase 3.5: added ``novel_set_mrr`` (the per-config headline
+# "fraction of novel records above best_threshold" — the metric
+# the README quotes as the "trust this tool" number). It's a
+# per-config constant (the same value on every row of a given
+# config block in the leaderboard) — the runner computes it once
+# after the threshold picker lands and patches it onto every
+# row before the CSV / DuckDB write.
 _CSV_COLUMNS: Tuple[str, ...] = (
     "config",
     "benchmark",
@@ -117,6 +128,7 @@ _CSV_COLUMNS: Tuple[str, ...] = (
     "recall_at_10",
     "fpr_on_novel",
     "ece",
+    "novel_set_mrr",
     "records_total",
     "records_novel",
     "records_duplicate",
@@ -232,6 +244,13 @@ class AggregateMetrics:
     precision_at_5: float
     recall_at_10: float
     fpr_on_novel: float
+    # Per-config headline (Phase 3.5). Computed once per run at
+    # ``best_threshold`` and patched onto every threshold row of
+    # the leaderboard so the value is visible in every dashboard
+    # cell. Distinct from ``fpr_on_novel`` (which is a sweep
+    # metric) — see ``novel_set_positive_rate`` for the
+    # distinction.
+    novel_set_mrr: float = 0.0
 
 
 def compute_aggregate(
@@ -239,13 +258,13 @@ def compute_aggregate(
     benchmark: Benchmark,
     *,
     threshold: float,
+    best_threshold: Optional[float] = None,
 ) -> AggregateMetrics:
     """Compute MRR / nDCG@10 / P@5 / R@10 / FPR-on-novel over the run.
 
     Records that errored are skipped (they have empty ``ranked_ids``,
-    so their contribution to MRR/nDCG/P/R is 0.0 by construction —
-    the runner reports the error count separately so this isn't
-    silent).
+    so their contribution to MRR/nDCG/P/R is 0.0 by construction — the
+    runner reports the error count separately so this isn't silent).
 
     The MRR / nDCG / P@R denominators are the *relevant* records
     only — those with a non-empty ``expected_top_ids``. The novel
@@ -260,6 +279,14 @@ def compute_aggregate(
     FPR-on-novel, by contrast, is computed over the novel subset
     only — that's the metric that measures the "false alarm" rate
     and there is no useful value to it on a relevant-query record.
+
+    The ``novel_set_mrr`` field is the per-config headline
+    (Phase 3.5). It is computed at ``best_threshold`` (NOT at
+    ``threshold`` — the sweep value). When ``best_threshold`` is
+    not provided (e.g. in the all-records-errored degenerate path)
+    it falls back to 0.0. The runner patches this value onto
+    every threshold row of the leaderboard so the headline number
+    is always visible in the dashboard.
     """
     by_id: Dict[str, BenchmarkRecord] = {r.id: r for r in benchmark.records}
 
@@ -271,6 +298,21 @@ def compute_aggregate(
 
     fpr_sum = 0.0
     n_novel = 0  # count of novel records that contributed to FPR
+
+    # novel_set_mrr accumulator: sum of 1.0 over novel records
+    # whose top1_score is above ``best_threshold``. We compute
+    # this in the same pass so the runner only walks the results
+    # list once.
+    novel_set_sum = 0.0
+    if best_threshold is not None:
+        for res in results:
+            if res.search_error:
+                continue
+            novel_set_sum += novel_set_positive_rate(
+                is_novel=res.is_novel,
+                top1_score=res.top1_score,
+                best_threshold=best_threshold,
+            )
 
     for res in results:
         rec = by_id.get(res.record_id)
@@ -310,7 +352,15 @@ def compute_aggregate(
             precision_at_5=0.0,
             recall_at_10=0.0,
             fpr_on_novel=0.0,
+            novel_set_mrr=0.0,
         )
+
+    # novel_set_mrr is the headline FPR-on-novel at best_threshold
+    # (Phase 3.5). Same denominator as fpr_on_novel — the novel
+    # subset. We re-derive it here from the accumulator to keep
+    # the code path straightforward (the sweep pass doesn't
+    # recompute it, we just used the best_threshold pass above).
+    novel_set_mrr = (novel_set_sum / n_novel) if n_novel else 0.0
 
     return AggregateMetrics(
         threshold=threshold,
@@ -319,6 +369,7 @@ def compute_aggregate(
         precision_at_5=p5_sum / n_relevant,
         recall_at_10=r10_sum / n_relevant,
         fpr_on_novel=(fpr_sum / n_novel) if n_novel else 0.0,
+        novel_set_mrr=novel_set_mrr,
     )
 
 
@@ -399,6 +450,7 @@ def write_duckdb(
                 recall_at_10 DOUBLE,
                 fpr_on_novel DOUBLE,
                 ece DOUBLE,
+                novel_set_mrr DOUBLE,
                 records_total BIGINT,
                 records_novel BIGINT,
                 records_duplicate BIGINT,
@@ -425,6 +477,11 @@ def write_duckdb(
         if "ece" not in existing_cols:
             con.execute(
                 "ALTER TABLE leaderboard ADD COLUMN ece DOUBLE"
+            )
+        # Phase 3.5: same forward-compat dance for ``novel_set_mrr``.
+        if "novel_set_mrr" not in existing_cols:
+            con.execute(
+                "ALTER TABLE leaderboard ADD COLUMN novel_set_mrr DOUBLE"
             )
         if rows:
             # DuckDB can ingest a list of dicts via ``executemany``
@@ -500,6 +557,12 @@ def _format_markdown_table(
     Expected Calibration Error) — same value for every row in the
     table because ECE is a run-level metric, not a per-threshold
     metric.
+
+    Phase 3.5 added the ``novel_set_mrr`` column — the per-config
+    headline FPR-on-novel at the chosen ``best_threshold``. Same
+    value on every row of a given config block (it's a config-level
+    scalar, not a per-threshold sweep value). This is the
+    "trust this tool" number the README quotes.
     """
     lines: List[str] = []
     lines.append(f"# Eval leaderboard — `{config_name}` on `{benchmark_path.name}`")
@@ -511,15 +574,18 @@ def _format_markdown_table(
         "to FPR-on-novel ≤ 0.15 (Phase 1 acceptance cap). "
         "**ECE** is run-level (independent of the threshold sweep). "
         "PHASE-3.md §3.3 target: ECE ≤ 0.10 (informational). "
+        "**novel_set_mrr** is the per-config headline FPR-on-novel at "
+        "the chosen best_threshold (PHASE-3.md §3.5 'trust this tool' "
+        "metric) — same value on every row of this config block. "
         "Eval set: `labeled_v300.jsonl` (LLM-generated v2, "
         "hand-review pending)."
     )
     lines.append("")
     header = (
         "| threshold | MRR | nDCG@10 | precision@5 | recall@10 | "
-        "FPR-on-novel | ECE | selected |"
+        "FPR-on-novel | ECE | novel_set_mrr | selected |"
     )
-    sep = "|---|---|---|---|---|---|---|---|"
+    sep = "|---|---|---|---|---|---|---|---|---|"
     lines.append(header)
     lines.append(sep)
     for row in rows:
@@ -531,6 +597,12 @@ def _format_markdown_table(
             ece_str = f"{float(ece_cell):.3f}"
         except (TypeError, ValueError):
             ece_str = str(ece_cell) if ece_cell != "" else "—"
+        # novel_set_mrr is the same value on every row of a config
+        # block. Format with 3 decimals to match the FPR column.
+        try:
+            nsm_str = f"{float(row.get('novel_set_mrr', 0)):.3f}"
+        except (TypeError, ValueError):
+            nsm_str = "—"
         lines.append(
             f"| {marker}{thr}{marker} "
             f"| {marker}{float(row.get('mrr', 0)):.3f}{marker} "
@@ -539,6 +611,7 @@ def _format_markdown_table(
             f"| {marker}{float(row.get('recall_at_10', 0)):.3f}{marker} "
             f"| {marker}{float(row.get('fpr_on_novel', 0)):.3f}{marker} "
             f"| {marker}{ece_str}{marker} "
+            f"| {marker}{nsm_str}{marker} "
             f"| {marker}{'YES' if is_sel else ''}{marker} |"
         )
     lines.append("")
@@ -581,7 +654,13 @@ def run_eval(
     n_novel = sum(1 for r in per_record if r.is_novel)
     n_dup = sum(1 for r in per_record if r.is_duplicate)
 
-    # Per-threshold aggregates.
+    # Per-threshold aggregates (Phase 3.5: we need to know ``best``
+    # before we can compute ``novel_set_mrr`` — the headline FPR
+    # at the picked best_threshold). Two-pass approach: first pass
+    # is the threshold sweep (novel_set_mrr=0 by default since
+    # best_threshold isn't known yet); second pass is a single
+    # compute_aggregate call at best_threshold to extract the
+    # headline value, which we then patch onto every row.
     aggregates: Dict[float, AggregateMetrics] = {}
     for thr in threshold_sweep:
         aggregates[thr] = compute_aggregate(per_record, benchmark, threshold=thr)
@@ -594,6 +673,14 @@ def run_eval(
         fpr_by_threshold=fpr_by_t,
         fpr_cap=fpr_cap,
     )
+
+    # Phase 3.5 — novel_set_mrr headline (the per-config FPR at
+    # best_threshold). Recompute the aggregate at best_threshold
+    # so we get the populated value, then read it off.
+    headline_agg = compute_aggregate(
+        per_record, benchmark, threshold=best, best_threshold=best
+    )
+    novel_set_mrr_value = headline_agg.novel_set_mrr
 
     # Build the CSV rows. The "selected_threshold" boolean is True
     # only for the best row, so the CSV reader can pick out the
@@ -620,6 +707,7 @@ def run_eval(
                 "recall_at_10": agg.recall_at_10,
                 "fpr_on_novel": agg.fpr_on_novel,
                 "ece": "",  # filled below from the calibration pass
+                "novel_set_mrr": novel_set_mrr_value,  # Phase 3.5 headline
                 "records_total": len(benchmark),
                 "records_novel": n_novel,
                 "records_duplicate": n_dup,
@@ -716,13 +804,26 @@ def run_eval(
     best_agg = aggregates[best]
 
     # ----------------------------------------------------------------
-    # Phase 3.3 — Calibration curve + ECE (continued)
+    # Phase 3.5 — FPR-on-novel per-bin breakdown (computed once,
+    # used by both PNGs).
+    # ----------------------------------------------------------------
+    # Same data (per-record top1_score + is_duplicate) but a
+    # different aggregation. The FPR breakdown is the "trust this
+    # tool" framing: per-bin counts of novel (red) vs duplicate
+    # (blue) records, plus the per-bin FPR contribution so the
+    # reader can read off "FPR at any threshold" by summing the
+    # contribution bars. The 3.3 calibration PNG now also takes
+    # this as an overlay on a second y-axis.
+    fpr_bins = fpr_breakdown(cal_scores, cal_labels)
+    docs_assets_dir = EVALS_DIR.parent / "docs" / "assets"
+
+    # ----------------------------------------------------------------
+    # Phase 3.3 — Calibration curve + ECE (with 3.5 FPR overlay)
     # ----------------------------------------------------------------
     # Write the calibration PNG. We do it at every run, not just on
     # the "selected" row — the curve is the same regardless of
     # threshold, and a per-config PNG that can be diffed across
     # runs is more useful than a guarded-once write.
-    docs_assets_dir = EVALS_DIR.parent / "docs" / "assets"
     cal_png_path = (
         docs_assets_dir / f"calibration-{config.name}.png"
     )
@@ -744,6 +845,71 @@ def run_eval(
         provenance="LLM-generated v2, hand-review pending",
         output_path=cal_png_path,
         title_extra=title_extra,
+        fpr_bins=fpr_bins,  # Phase 3.5 overlay (FPR-on-novel)
+    )
+
+    # ----------------------------------------------------------------
+    # Phase 3.5 — FPR-on-novel per-bin breakdown (companion PNG)
+    # ----------------------------------------------------------------
+    # Dedicated 2-subplot PNG (stacked bars + per-bin FPR
+    # contribution). Lives next to the calibration PNG so the two
+    # are visually comparable.
+    fpr_png_path = (
+        docs_assets_dir / f"fpr-on-novel-breakdown-{config.name}.png"
+    )
+    fpr_title_extra = ""
+    if best_agg.fpr_on_novel > 0.15:
+        fpr_title_extra = (
+            f" (FPR > 0.15 — above the PHASE-3.md §3.5 "
+            f"'trust this tool' cap; recorded verbatim)"
+        )
+    plot_fpr_breakdown_curve(
+        fpr_bins,
+        config_name=config.name,
+        best_threshold=best,
+        fpr_on_novel=best_agg.fpr_on_novel,
+        eval_name=benchmark.path.name,
+        provenance="LLM-generated v2, hand-review pending",
+        output_path=fpr_png_path,
+        title_extra=fpr_title_extra,
+    )
+
+    # ----------------------------------------------------------------
+    # Phase 3.5 — Per-config FPR-on-novel markdown summary
+    # ----------------------------------------------------------------
+    # One short table per config, lives next to the failure
+    # breakdown markdown. The "trust this tool" framing lives in
+    # the cap_phrase call-out: the headline FPR vs the 0.15 cap,
+    # and the cumulative FPR at best_threshold as a cross-check.
+    from src.eval.calibration import write_per_config_markdown
+    md_path = (
+        docs_assets_dir / f"fpr-on-novel-breakdown-{config.name}.md"
+    )
+    # corpus_count is only available once the leaderboard rows
+    # are written; we re-derive the int here so the markdown
+    # carries the same value as the per-record CSV header.
+    corpus_count_for_md = 0
+    for row in rows:
+        cc = row.get("corpus_count", "")
+        if isinstance(cc, int):
+            corpus_count_for_md = cc
+            break
+        if cc and str(cc).isdigit():
+            corpus_count_for_md = int(cc)
+            break
+    write_per_config_markdown(
+        fpr_bins,
+        config_name=config.name,
+        benchmark_name=benchmark.path.name,
+        best_threshold=best,
+        fpr_on_novel=best_agg.fpr_on_novel,
+        novel_set_mrr=novel_set_mrr_value,
+        ece=ece_value,
+        corpus_count=corpus_count_for_md,
+        total_novel=len(benchmark.novel_records()),
+        total_duplicate=len(benchmark.duplicate_records()),
+        total_records=len(benchmark),
+        output_path=md_path,
     )
 
     return {
@@ -755,6 +921,7 @@ def run_eval(
         "best_precision_at_5": best_agg.precision_at_5,
         "best_recall_at_10": best_agg.recall_at_10,
         "best_fpr_on_novel": best_agg.fpr_on_novel,
+        "novel_set_mrr": novel_set_mrr_value,
         "rows": rows,
         "per_record": per_record,
         "elapsed_seconds": elapsed,
@@ -766,6 +933,8 @@ def run_eval(
         "ece": ece_value,
         "calibration_bins": bins,
         "calibration_png": str(cal_png_path),
+        "fpr_breakdown_bins": fpr_bins,
+        "fpr_breakdown_png": str(fpr_png_path),
     }
 
 

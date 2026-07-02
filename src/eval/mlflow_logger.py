@@ -476,6 +476,12 @@ def metrics_from_summary(
     Expected Calibration Error (same value at every threshold; ECE
     is a run-level metric). We surface it as ``ece`` so the MLflow
     UI graph panel picks it up without a rename.
+
+    Phase 3.5 also adds ``novel_set_mrr`` — the per-config
+    headline FPR-on-novel at the chosen best_threshold. Same
+    value across all rows of a given config block; the dashboard
+    can plot it alongside the per-threshold ``fpr_on_novel`` to
+    see how close the headline is to the sweep.
     """
     metrics: Dict[str, float] = {
         "mrr": float(summary["best_mrr"]),
@@ -492,6 +498,12 @@ def metrics_from_summary(
     if "ece" in summary and summary["ece"] is not None:
         try:
             metrics["ece"] = float(summary["ece"])
+        except (TypeError, ValueError):
+            pass
+    # Phase 3.5 — same forward-compat treatment for novel_set_mrr.
+    if "novel_set_mrr" in summary and summary["novel_set_mrr"] is not None:
+        try:
+            metrics["novel_set_mrr"] = float(summary["novel_set_mrr"])
         except (TypeError, ValueError):
             pass
     return metrics

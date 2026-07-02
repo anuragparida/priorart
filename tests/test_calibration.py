@@ -31,9 +31,13 @@ import pytest
 from src.eval.calibration import (
     DEFAULT_N_BINS,
     BinStats,
+    FprBreakdownBin,
     bin_predictions,
     compute_ece,
+    fpr_on_novel_breakdown,
     plot_calibration,
+    plot_fpr_breakdown,
+    write_per_config_markdown,
 )
 
 
@@ -301,3 +305,286 @@ def test_plot_calibration_title_includes_ece_and_provenance(
         output_path=tmp_path / "hybrid.png",
     )
     assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5 — FPR-on-novel per-bin breakdown
+# ---------------------------------------------------------------------------
+#
+# These tests cover the 3.5 surface (fpr_on_novel_breakdown +
+# plot_fpr_breakdown + the markdown writer). The plot_fpr_breakdown
+# tests are smoke-level (same as 3.3's) — the math is what we
+# actually assert.
+
+
+def test_fpr_on_novel_breakdown_empty_inputs_returns_full_grid() -> None:
+    """Empty (scores, labels) → 10 zero-filled FprBreakdownBin rows.
+
+    Same contract as ``bin_predictions``: a downstream reader
+    (plot, markdown writer) always gets a full grid of length
+    ``DEFAULT_N_BINS``.
+    """
+    bins = fpr_on_novel_breakdown([], [])
+    assert len(bins) == DEFAULT_N_BINS
+    for b in bins:
+        assert isinstance(b, FprBreakdownBin)
+        assert b.novel_count == 0
+        assert b.duplicate_count == 0
+        assert b.novel_fraction == 0.0
+        assert b.fpr_contribution == 0.0
+    # Bin edges match the calibration module.
+    assert bins[0].lower == 0.0
+    assert bins[0].upper == pytest.approx(0.1)
+    assert bins[-1].upper == pytest.approx(1.0)
+
+
+def test_fpr_on_novel_breakdown_mixed_labels() -> None:
+    """A 50/50 mix of novel and duplicate across bins.
+
+    10 records, one per bin, alternating novel/duplicate starting
+    with novel. Verifies novel_count, duplicate_count,
+    novel_fraction, and fpr_contribution (= 1/5 per novel bin
+    since there are 5 novel records total).
+    """
+    scores = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    labels = [False, True, False, True, False, True, False, True, False, True]
+    bins = fpr_on_novel_breakdown(scores, labels)
+    assert len(bins) == DEFAULT_N_BINS
+    for i, b in enumerate(bins):
+        if i % 2 == 0:
+            assert b.novel_count == 1
+            assert b.duplicate_count == 0
+            assert b.novel_fraction == 1.0
+            assert b.fpr_contribution == pytest.approx(1.0 / 5.0)
+        else:
+            assert b.novel_count == 0
+            assert b.duplicate_count == 1
+            assert b.novel_fraction == 0.0
+            assert b.fpr_contribution == 0.0
+
+
+def test_fpr_on_novel_breakdown_handles_all_novel() -> None:
+    """All-novel case: novel_fraction = 1.0 in every non-empty bin,
+    fpr_contribution sums to 1.0 across non-empty bins."""
+    scores = [0.1, 0.3, 0.5, 0.7, 0.9]
+    labels = [False, False, False, False, False]
+    bins = fpr_on_novel_breakdown(scores, labels)
+    total_contrib = 0.0
+    nonempty = 0
+    for b in bins:
+        if b.novel_count > 0 or b.duplicate_count > 0:
+            nonempty += 1
+            assert b.novel_fraction == 1.0
+            total_contrib += b.fpr_contribution
+    assert nonempty == 5
+    assert total_contrib == pytest.approx(1.0)
+
+
+def test_fpr_on_novel_breakdown_handles_no_novel() -> None:
+    """No-novel case: novel_fraction = 0.0 in every bin,
+    fpr_contribution = 0.0 (denominator guard)."""
+    scores = [0.1, 0.3, 0.5]
+    labels = [True, True, True]
+    bins = fpr_on_novel_breakdown(scores, labels)
+    for b in bins:
+        assert b.fpr_contribution == 0.0
+        if b.duplicate_count > 0:
+            assert b.novel_fraction == 0.0
+
+
+def test_fpr_on_novel_breakdown_clamps_out_of_range_scores() -> None:
+    """Scores outside [0, 1] are clamped to the nearest edge.
+
+    A score of 1.0000001 lands in the last bin (the same edge
+    case as the calibration module). A negative score lands in
+    bin 0.
+    """
+    bins = fpr_on_novel_breakdown(
+        [-0.5, 0.5, 1.5],
+        [False, True, False],
+    )
+    # Bin 0 gets the clamped -0.5 + 0.5 = novel and duplicate both
+    # in bin 0... actually 0.5 maps to bin 5 (0.5 * 10 = 5.0,
+    # min with 9 = 5), and 1.5 clamps to 1.0 → bin 9.
+    # -0.5 clamps to 0.0 → bin 0.
+    assert bins[0].novel_count == 1
+    assert bins[5].duplicate_count == 1
+    assert bins[9].novel_count == 1
+
+
+def test_fpr_on_novel_breakdown_rejects_mismatched_lengths() -> None:
+    """Length mismatch → ValueError (same discipline as bin_predictions)."""
+    with pytest.raises(ValueError):
+        fpr_on_novel_breakdown([0.5], [True, False])
+    with pytest.raises(ValueError):
+        fpr_on_novel_breakdown([0.5, 0.7], [True])
+
+
+def test_fpr_on_novel_breakdown_rejects_nonpositive_n_bins() -> None:
+    """n_bins <= 0 → ValueError (same as bin_predictions)."""
+    with pytest.raises(ValueError):
+        fpr_on_novel_breakdown([0.5], [True], n_bins=0)
+    with pytest.raises(ValueError):
+        fpr_on_novel_breakdown([0.5], [True], n_bins=-1)
+
+
+def test_plot_fpr_breakdown_smoke(tmp_path: Path) -> None:
+    """plot_fpr_breakdown writes a non-empty PNG without raising.
+
+    Same smoke-test discipline as plot_calibration. The figure has
+    two stacked subplots (novel/duplicate bars + per-bin FPR
+    contribution) and a title with the FPR + best_threshold
+    + provenance call-outs.
+    """
+    scores = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    labels = [False] * 5 + [True] * 5
+    bins = fpr_on_novel_breakdown(scores, labels)
+    out = plot_fpr_breakdown(
+        bins,
+        config_name="dense_bge_m3",
+        best_threshold=0.75,
+        fpr_on_novel=0.0,  # all-novel live in the lower half here
+        output_path=tmp_path / "fpr.png",
+        eval_name="labeled_v300.jsonl",
+        provenance="LLM-generated v2, hand-review pending",
+    )
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_calibration_accepts_fpr_bins_overlay(tmp_path: Path) -> None:
+    """plot_calibration's new fpr_bins kwarg adds a second-axis overlay
+    without breaking the legacy single-axis call."""
+    scores = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    labels = [True] * 10
+    bins = bin_predictions(scores, labels)
+    fpr = fpr_on_novel_breakdown(scores, [False] * 5 + [True] * 5)
+    out = plot_calibration(
+        bins,
+        config_name="dense_bge_m3",
+        output_path=tmp_path / "cal_with_fpr.png",
+        fpr_bins=fpr,
+    )
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_calibration_without_fpr_bins_unchanged(tmp_path: Path) -> None:
+    """The legacy plot_calibration call (no fpr_bins) still works —
+    the overlay is opt-in."""
+    scores = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    labels = [True] * 10
+    bins = bin_predictions(scores, labels)
+    out = plot_calibration(
+        bins,
+        config_name="dense_bge_m3",
+        output_path=tmp_path / "cal_legacy.png",
+    )
+    assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5 — write_per_config_markdown
+# ---------------------------------------------------------------------------
+
+
+def test_write_per_config_markdown_creates_file_with_required_sections(
+    tmp_path: Path,
+) -> None:
+    """The markdown writer produces a file with the headline
+    numbers, the 10-row per-bin table, the cap call-out, and the
+    honest-scope paragraph. This is the file 3.7's README links to.
+    """
+    scores = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    labels = [False] * 5 + [True] * 5
+    bins = fpr_on_novel_breakdown(scores, labels)
+    out_path = tmp_path / "fpr-dense_bge_m3.md"
+    returned = write_per_config_markdown(
+        bins,
+        config_name="dense_bge_m3",
+        benchmark_name="labeled_v300.jsonl",
+        best_threshold=0.80,
+        fpr_on_novel=0.75,
+        novel_set_mrr=0.75,
+        ece=0.527,
+        corpus_count=10983,
+        total_novel=5,
+        total_duplicate=5,
+        total_records=10,
+        output_path=out_path,
+    )
+    assert returned == out_path.resolve()
+    assert out_path.exists()
+    text = out_path.read_text(encoding="utf-8")
+
+    # Headline + provenance + cap call-out.
+    assert "FPR-on-novel breakdown" in text
+    assert "dense_bge_m3" in text
+    assert "labeled_v300.jsonl" in text
+    assert "LLM-generated v2, hand-review pending" in text
+    assert "0.750" in text  # fpr_on_novel
+    assert "0.15" in text   # the cap
+    assert "above the PHASE-3.md §3.5 cap" in text  # gap call-out
+    assert "trust this tool" in text
+
+    # 10-row per-bin table.
+    assert "| bin | range | novel_count | duplicate_count |" in text
+    assert text.count("| 0 | [0.0, 0.1) |") == 1
+    assert text.count("| 9 | [0.9, 1.0) |") == 1
+
+    # Cumulative FPR at best_threshold.
+    assert "Cumulative FPR-on-novel at" in text
+    assert "best_threshold=0.80" in text
+
+    # Honest scope paragraph.
+    assert "Honest scope" in text
+    assert "Anurag's review" in text
+
+
+def test_write_per_config_markdown_handles_clearing_the_cap(
+    tmp_path: Path,
+) -> None:
+    """When fpr_on_novel <= 0.15 the markdown renders the
+    "clears the cap" branch."""
+    bins = fpr_on_novel_breakdown([], [])
+    out_path = tmp_path / "fpr-clears.md"
+    write_per_config_markdown(
+        bins,
+        config_name="bm25",
+        benchmark_name="labeled_v300.jsonl",
+        best_threshold=0.95,
+        fpr_on_novel=0.10,
+        novel_set_mrr=0.10,
+        ece=0.10,
+        corpus_count=10983,
+        total_novel=0,
+        total_duplicate=0,
+        total_records=0,
+        output_path=out_path,
+    )
+    text = out_path.read_text(encoding="utf-8")
+    assert "clears the PHASE-3.md §3.5 cap" in text
+    # Negative case from the other test shouldn't appear.
+    assert "above the PHASE-3.md §3.5 cap" not in text
+
+
+def test_write_per_config_markdown_creates_parent_dirs(tmp_path: Path) -> None:
+    """Parent directory of the output path is created if missing —
+    same behaviour as the PNG writers."""
+    nested = tmp_path / "nested" / "subdir" / "fpr.md"
+    bins = fpr_on_novel_breakdown([], [])
+    write_per_config_markdown(
+        bins,
+        config_name="x",
+        benchmark_name="labeled_v300.jsonl",
+        best_threshold=0.80,
+        fpr_on_novel=0.0,
+        novel_set_mrr=0.0,
+        ece=0.0,
+        corpus_count=0,
+        total_novel=0,
+        total_duplicate=0,
+        total_records=0,
+        output_path=nested,
+    )
+    assert nested.exists()

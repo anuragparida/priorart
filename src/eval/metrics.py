@@ -205,6 +205,59 @@ def fpr_on_novel_record(
     return 1.0 if float(top1_score) >= float(threshold) else 0.0
 
 
+def novel_set_positive_rate(
+    *,
+    is_novel: bool,
+    top1_score: float | None,
+    best_threshold: float,
+) -> float:
+    """Per-record contribution to the "novel-set MRR" / trust-this-tool metric.
+
+    This is the headline scalar that PHASE-3.md §3.5 calls
+    ``novel_set_mrr``: the fraction of ``is_duplicate=False``
+    records whose top-1 score crossed the *production* threshold
+    (``best_threshold`` — the threshold that maximises MRR subject
+    to FPR ≤ 0.15, with a best-effort fallback if no threshold
+    clears the cap).
+
+    The math is identical to :func:`fpr_on_novel_record` — both
+    reduce to "1.0 if is_novel AND top1_score ≥ threshold else 0.0"
+    at the per-record level. The runner exposes both because they
+    are surfaced in different places:
+
+    - ``fpr_on_novel`` is the *sweep* metric (per-threshold
+      per-row in the leaderboard CSV) — used for the threshold
+      picker and the per-threshold dashboard view.
+    - ``novel_set_mrr`` is the *config-level* headline — the
+      single value the README quotes, computed once per config at
+      the chosen best threshold, surfaced on every leaderboard row
+      so the cell is always visible to the reader.
+
+    Parameters
+    ----------
+    is_novel : bool
+        True for records labeled ``is_duplicate=False``.
+    top1_score : float or None
+        The normalised similarity of the top-1 hit, in [0, 1].
+    best_threshold : float
+        The production threshold (the one the runner picked for
+        this config). NOT a per-row sweep value — this is a fixed
+        per-config scalar.
+
+    Returns
+    -------
+    float
+        1.0 if the record is novel and above ``best_threshold``,
+        0.0 otherwise (including the ``top1_score is None`` and
+        ``not is_novel`` cases).
+    """
+    return fpr_on_novel_record(
+        is_novel=is_novel,
+        top1_score=top1_score,
+        threshold=best_threshold,
+    )
+
+
 #: The default cosine-threshold sweep for Phase 1 (per docs/PHASE-1.md §1.6
 #: and docs/EVAL.md "Threshold sweep"). 7 cutoffs, 0.05 spacing.
 DEFAULT_THRESHOLD_SWEEP: List[float] = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]

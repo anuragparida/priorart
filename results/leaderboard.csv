@@ -1,54 +1,62 @@
-config,benchmark,corpus_count,embedding_model,threshold,mrr,ndcg_at_10,precision_at_5,recall_at_10,fpr_on_novel,ece,records_total,records_novel,records_duplicate,records_skipped,search_errors,selected_threshold,notes
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,0.5266855445670519,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.5,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,True,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+config,benchmark,corpus_count,embedding_model,threshold,mrr,ndcg_at_10,precision_at_5,recall_at_10,fpr_on_novel,ece,novel_set_mrr,records_total,records_novel,records_duplicate,records_skipped,search_errors,selected_threshold,notes
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.4636565741919328,0.75,300,200,100,0,52,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.75,0.4636565741919328,0.75,300,200,100,0,52,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.5,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,True,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.55,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.55,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.6,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.6,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.65,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.65,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.7,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.7,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.75,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.75,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.8,0.34375000000000006,0.3556752410491585,0.07500000000000002,0.39285714285714285,1.0,0.6200365300233772,1.0,300,200,100,0,123,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
 companies.name + companies.description. k1=1.5, b=0.75 (literature
 defaults). Tiny English stopword set; lowercased + split on
 non-alphanumeric runs. The corpus index is built lazily on first
 call and cached at module level; ingest that grows the corpus past
 the cached row_count triggers an automatic rebuild."
-bm25,labeled_v300.jsonl,10983,rank_bm25,0.8,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
-companies.name + companies.description. k1=1.5, b=0.75 (literature
-defaults). Tiny English stopword set; lowercased + split on
-non-alphanumeric runs. The corpus index is built lazily on first
-call and cached at module level; ingest that grows the corpus past
-the cached row_count triggers an automatic rebuild."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.5,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.5,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.55,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -56,7 +64,7 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.55,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.6,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -64,7 +72,7 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.6,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.65,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -72,7 +80,7 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.65,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.7,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -80,7 +88,7 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.7,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.75,0.1,0.1,0.02,0.1,1.0,0.19935504752127736,0.25,300,200,100,0,286,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -88,7 +96,7 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.75,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,0.98,0.5063156461663056,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+hybrid_rrf,labeled_v300.jsonl,,BAAI/bge-m3 + rank_bm25,0.8,0.1,0.1,0.02,0.1,0.25,0.19935504752127736,0.25,300,200,100,0,286,True,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -96,7 +104,71 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.8,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,0.63,0.5063156461663056,300,200,100,0,0,True,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,0.5266855445670519,0.79,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,0.5266855445670519,0.79,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,0.5266855445670519,0.79,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.5,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,True,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.55,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.6,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.65,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.7,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.75,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+bm25,labeled_v300.jsonl,10983,rank_bm25,0.8,0.3921907993966818,0.41028163062722056,0.09,0.47,1.0,0.602830794968734,1.0,300,200,100,0,0,False,"Phase 2.9 BM25 config — lexical retrieval (rank_bm25.BM25Okapi) over
+companies.name + companies.description. k1=1.5, b=0.75 (literature
+defaults). Tiny English stopword set; lowercased + split on
+non-alphanumeric runs. The corpus index is built lazily on first
+call and cached at module level; ingest that grows the corpus past
+the cached row_count triggers an automatic rebuild."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.5,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config. provenance=llm-generated-v2-pending-anurag-hand-review (eval=labeled_v300.jsonl; ECE = LLM-generated, hand-label pending)"
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.55,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
 (bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
 companies table. k=60 (Cormack et al. 2009 default). Dense
 confidence is inherited on the fused hit so the threshold sweep
@@ -104,17 +176,43 @@ is comparable across modes. Both retrievers over-fetch by 2x to
 leave RRF room to find cross-list hits; the final slice is to
 top_k. Cohere rerank is opt-in only — NOT a default Phase 2
 config."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,0.5266855445670519,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.5,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.55,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.6,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.65,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.7,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,1.0,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.75,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.995,0.5266855445670519,300,200,100,0,0,False,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
-dense_bge_m3,labeled_v300.jsonl,10983,BAAI/bge-m3,0.8,0.5666666666666668,0.5752371901428583,0.1199999999999999,0.6,0.79,0.5266855445670519,300,200,100,0,0,True,"Baseline Phase 1 config. Dense bge-m3 only, no reranker."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.6,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.65,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.7,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,1.0,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.75,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,0.98,0.5063156461663056,0.63,300,200,100,0,0,False,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config."
+hybrid_rrf,labeled_v300.jsonl,10983,BAAI/bge-m3 + rank_bm25,0.8,0.4579285714285715,0.4818750215641461,0.10599999999999994,0.56,0.63,0.5063156461663056,0.63,300,200,100,0,0,True,"Phase 2.9 Hybrid RRF config — Reciprocal Rank Fusion of dense
+(bge-m3 pgvector ANN) + BM25 (rank_bm25 lexical) over the same
+companies table. k=60 (Cormack et al. 2009 default). Dense
+confidence is inherited on the fused hit so the threshold sweep
+is comparable across modes. Both retrievers over-fetch by 2x to
+leave RRF room to find cross-list hits; the final slice is to
+top_k. Cohere rerank is opt-in only — NOT a default Phase 2
+config."
