@@ -1,69 +1,195 @@
 # PriorArt
 
-> Startup-idea deduplication against the public YC + Product Hunt + HN
-> corpus, with a reproducible eval harness and a labeled benchmark.
+> Startup-idea deduplication against the public YC + Product Hunt + HN corpus,
+> with a reproducible eval harness and a labeled benchmark. Built like a
+> production ML/AI platform: pgvector + bge-m3 retrieval, Temporal workflows,
+> Dagster data platform, MLflow experiment tracking, Langfuse LLM observability.
 
-![PriorArt leaderboard — Phase 2, 3 configs on labeled_v300.jsonl](docs/assets/leaderboard-v2.png)
+![PriorArt eval leaderboard v2 — 3 retrieval configs on labeled_v300.jsonl](docs/assets/leaderboard-v2.png)
 
-A self-hosted web service. Paste an idea, get a ranked list of similar
-past launches, a Pydantic-validated structured comparison for the top
-competitors, and a market-scope signal. The retrieval is benchmarked
-against a hand-labeled 300-idea benchmark drawn from the public
-corpus — see [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) for the
-metric definitions and the [live leaderboard CSV](results/leaderboard.csv)
-for the current numbers.
+![PriorArt system architecture — Temporal workflow, Dagster, Langfuse, MLflow, pgvector](docs/assets/architecture.png)
+
+![PriorArt calibration curve — dense_bge_m3 on labeled_v300.jsonl](docs/assets/calibration-dense_bge_m3.png)
+
+![PriorArt per-category failure breakdown — 8 business categories, 3 configs](docs/assets/failure-breakdown.png)
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![CI](https://github.com/<owner>/priorart/actions/workflows/eval-regression.yml/badge.svg)
+![Made with bge-m3 + pgvector + Temporal + Dagster](https://img.shields.io/badge/made%20with-bge--m3%20%2B%20pgvector%20%2B%20Temporal%20%2B%20Dagster-blueviolet)
 
 ---
 
-## The CV line
+## What it is
+
+A self-hosted web service. Paste an idea, get a ranked list of similar past
+launches, a Pydantic-validated structured comparison for the top competitors,
+and a market-scope signal. The retrieval is benchmarked against a labeled
+300-idea benchmark drawn from the public YC + Product Hunt + HN corpus — see
+[`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) for the metric definitions and the
+[live leaderboard CSV](results/leaderboard.csv) for the current numbers.
+
+**The CV line:**
 
 > Built an end-to-end production-grade startup-idea deduplication and
-> competitor-research service: pgvector + bge-m3 retrieval, Pydantic-
-> validated LLM structured outputs, multi-step Temporal workflows with
-> web-search fallback, Dagster-managed corpus ingestion, Langfuse
-> observability, and a reproducible MLflow-tracked evaluation harness
-> (MRR / nDCG@K / calibration) over a labeled public-corpus benchmark.
+> competitor-research service: pgvector + bge-m3 retrieval, Pydantic-validated
+> LLM structured outputs, multi-step Temporal workflows with web-search
+> fallback, Dagster-managed corpus ingestion, MLflow-tracked experiments,
+> Langfuse LLM observability, and a reproducible evaluation harness
+> (MRR / nDCG@K / calibration / FPR-on-novel) over a labeled 300-idea
+> benchmark drawn from the public YC + Product Hunt + HN corpus.
 
-This is the public-safe evolution of the Mercedes-Benz thesis
-(LLM-based vector search, structured JSON outputs, PG vector,
-similarity metrics, retrieval@K). The thesis was internally scoped;
-this project is the same engineering pointed at a public problem,
-with a public corpus and a reproducible benchmark behind it.
+This is the public-safe evolution of the Mercedes-Benz thesis (LLM-based
+vector search, structured JSON outputs, PG vector, similarity metrics,
+retrieval@K). The thesis was internally scoped; this project is the same
+engineering pointed at a public problem, with a public corpus and a
+reproducible benchmark behind it.
+
+**Status:** Phase 1 ✓ shipped. Phase 2 ✓ shipped. **Phase 3 ✓ shipped** (Dagster
++ calibration curves + FPR-on-novel breakdown + config-change sensor; the
+GitHub Actions regression lands in 3.6). 3.10 final smoke test + 3.12 review
+are the remaining gates.
 
 ---
 
-## Status
+## Demo
 
-**Phase 1 ✓ shipped.** Working idea-lookup API on `localhost:18001`,
-Postgres + pgvector in Docker, 5,949-company YC corpus embedded with
-`BAAI/bge-m3`, 100-record labeled benchmark, eval harness computing
-MRR / nDCG@10 / precision@5 / recall@10 / FPR-on-novel, Vite + React
-19 + shadcn/ui dark-mode frontend on `localhost:15174`.
+<!-- asciinema embed here -->
 
-**Phase 2 ✓ shipped (architecture + leaderboard v2 in this card).**
-Temporal `IdeaAnalysisWorkflow` orchestrates the per-idea pipeline with
-retry + web-search fallback + low-confidence signal channel (Phase 2.1+2.2).
-Langfuse v2 SDK wraps every LLM call with the full metadata set
-(Phase 2.3). MLflow self-hosted on port 15000 tracks every eval run
-with 9 params + 6 metrics + 4 artifacts (Phase 2.4). Corpus expanded
-to 10,983 records (YC + Product Hunt + HN; Phase 2.5–2.7). Eval set
-expanded to 300 (Phase 2.8). Three retrieval configs in the leaderboard:
-dense bge-m3, BM25, hybrid RRF (Phase 2.9). Web-fallback activity
-verified live (Phase 2.10). Architecture diagram + this README update
-(Phase 2.11 — current card). **Phase 2 review (2.12) is the gate.**
+A 2-minute screen capture of the full flow — `make eval` runs the harness,
+`pnpm dev` starts the frontend, paste an idea, see ranked competitors +
+structured verdicts + the Temporal + Langfuse UI behind them. Recorded with
+`asciinema rec`, embedded by the 3.8 card.
 
-**Phase 1 acceptance gate:** MRR ≥ 0.50 on the 100-idea labeled
-benchmark. **Current:** MRR = 0.559 ✓. FPR-on-novel cap of 0.15 is
-not yet met on the dense-only config — see
-[`docs/METHODOLOGY.md` § Limitations](docs/METHODOLOGY.md#limitations)
-for the honest read and the Phase 2 reranker / hybrid lever.
+---
 
-**Phase 2 acceptance gate** (per [`docs/PHASE-2.md`](docs/PHASE-2.md)
-§ Definition of Done): 3 retrieval configs in the leaderboard, all
-with MRR ≥ 0.6 (dense ≥ 0.75 target). **Current on labeled_v300.jsonl:**
-dense=0.567, bm25=0.392, hybrid_rrf=0.458. **None clears the dense ≥ 0.75
-target.** See **Limitations** below — the eval set is LLM-generated v2
-and the targets are INFORMATIONAL until the hand-label pass lands.
+## Eval leaderboard (Phase 3 — `labeled_v300.jsonl`)
+
+The leaderboard image at the top of this README is rendered **directly from
+[`results/leaderboard.csv`](results/leaderboard.csv)** by
+[`scripts/render_leaderboard_v2_screenshot.py`](scripts/render_leaderboard_v2_screenshot.py).
+The numbers in the image match the CSV to the digit. One row per config — the
+`selected_threshold` is the MRR-max per config (the runner falls back when no
+threshold meets the FPR ≤ 0.15 cap).
+
+| Config | Threshold | MRR | nDCG@10 | precision@5 | recall@10 | FPR-on-novel | ECE | novel_set_mrr |
+|---|---|---|---|---|---|---|---|---|
+| `dense_bge_m3` | 0.80 | 0.567 | 0.575 | 0.120 | 0.600 | 0.79 | 0.527 | 0.79 |
+| `hybrid_rrf`   | 0.80 | 0.458 | 0.482 | 0.106 | 0.560 | 0.63 | 0.506 | 0.63 |
+| `bm25`         | 0.50 | 0.392 | 0.410 | 0.090 | 0.470 | 1.00 | 0.603 | 1.00 |
+
+**Trust-this-tool read on FPR-on-novel:** FPR-on-novel is the metric that
+determines whether a real user would trust the tool — and as of this writing,
+**no config currently clears the 0.15 cap** (`dense_bge_m3@0.8: 0.79`,
+`hybrid_rrf@0.8: 0.63`, `bm25@0.5: 1.00`). Phase 4 (reranker) is the lever. The
+honest gap is the per-bin breakdown: nearly all the novel records that get
+flagged as duplicates live in the `[0.8, 1.0)` cosine bin. See the per-config
+FPR tables at
+[`docs/assets/fpr-on-novel-breakdown-dense_bge_m3.md`](docs/assets/fpr-on-novel-breakdown-dense_bge_m3.md),
+[`docs/assets/fpr-on-novel-breakdown-hybrid_rrf.md`](docs/assets/fpr-on-novel-breakdown-hybrid_rrf.md),
+[`docs/assets/fpr-on-novel-breakdown-bm25.md`](docs/assets/fpr-on-novel-breakdown-bm25.md)
+for the bin-by-bin read.
+
+The full per-threshold sweep lives at
+[`results/leaderboard.md`](results/leaderboard.md) (one section per config).
+The `eval.duckdb` file is the single-file DuckDB queryable view of every run
+— see [`docs/EVAL.md`](docs/EVAL.md) for the schema and the queries.
+
+To regenerate after `make eval`:
+
+```bash
+make screenshot-v2    # writes docs/assets/leaderboard-v2.png
+```
+
+### Calibration curves
+
+Calibration answers a different question than leaderboard rank: *when the
+system says a record has similarity 0.85 to a known duplicate, is it right
+0.85 of the time?* The per-config curves are:
+
+- [`docs/assets/calibration-dense_bge_m3.png`](docs/assets/calibration-dense_bge_m3.png) — ECE **0.527**
+- [`docs/assets/calibration-hybrid_rrf.png`](docs/assets/calibration-hybrid_rrf.png) — ECE **0.506**
+- [`docs/assets/calibration-bm25.png`](docs/assets/calibration-bm25.png) — ECE **0.603**
+
+The PHASE-3.md §3.3 target was ECE ≤ 0.10. **All three configs are above the
+target.** This is the calibration problem Phase 4 (reranker) needs to solve —
+not just "tune the threshold" but "is the system actually calibrated." See
+[Limitations](#limitations) below.
+
+### Per-category failure breakdown
+
+8 business categories (B2B SaaS, Consumer, Devtools, Marketplace, Fintech,
+Healthcare, Education, Other), per-(config, category) MRR / nDCG@10 /
+FPR-on-novel + top-3 failure examples. Consolidated heatmap at
+[`docs/assets/failure-breakdown.png`](docs/assets/failure-breakdown.png); per-
+config tables at
+[`docs/assets/failure-breakdown-dense_bge_m3.md`](docs/assets/failure-breakdown-dense_bge_m3.md),
+[`docs/assets/failure-breakdown-hybrid_rrf.md`](docs/assets/failure-breakdown-hybrid_rrf.md),
+[`docs/assets/failure-breakdown-bm25.md`](docs/assets/failure-breakdown-bm25.md).
+The full per-(config, category) breakdown is in
+[`results/failure-breakdown.csv`](results/failure-breakdown.csv).
+
+**Honest pattern:** on `dense_bge_m3@T=0.65` devtools (n=15) shows MRR=0.800,
+consumer (n=18) MRR=0.500, b2b_saas (n=11) MRR=0.222, fintech (n=23) MRR=0.200,
+and marketplace / healthcare / education show 0.000 MRR because every record
+in those buckets is an adversarial example (no expected ids). 172/300 records
+land in `other` (the rule-based v1 classifier doesn't catch LLM-generated idea
+descriptions that don't carry explicit category keywords) — the per-category
+picture will be sharper after the hand-label pass.
+
+---
+
+## Architecture (Temporal × Dagster × MLflow × Langfuse × pgvector)
+
+![PriorArt system architecture — Temporal workflow + Dagster + Langfuse + MLflow + pgvector](docs/assets/architecture.png)
+
+The diagram above is rendered from
+[`docs/assets/architecture.svg`](docs/assets/architecture.svg). The Mermaid
+source is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#the-big-picture-phase-2-ships-phase-3-deferred).
+The four production-grade layers each own a distinct surface; the boundary
+between them is the senior-engineer signal.
+
+**Temporal owns the per-idea workflow.** The `IdeaAnalysisWorkflow` (Phase 2.1)
+sequences six activities with explicit retry policies and a low-confidence
+signal channel: `embed_idea` (bge-m3) → `ann_search` (pgvector HNSW, top-K=20)
+→ confidence-band check (if top-1 cosine < 0.55, park on the `review` signal
+for human review) → `llm_compare_topk` (Claude Sonnet 4.5 via `instructor` +
+Pydantic v2, non-retryable on schema violation) → web fallback (if top-1
+cosine < 0.40, SearXNG → Firecrawl → re-embed → re-run ANN) → `market_scope_
+signal` + `assemble_verdict` (cheap local call + pure-function assembly into
+the Pydantic `IdeaVerdict`). The Temporal UI on `http://localhost:8233` shows
+per-idea runs, activity history, retry events, and signal channels.
+
+**Dagster owns the batch data platform.** Five corpus-ingestion assets
+(`yc_directory`, `product_hunt_archive`, `hn_show_posts`, `company_embeddings`,
+`eval_benchmark`), a `@daily nightly_re_embedding` schedule, and a
+`config_change` sensor that watches `configs/*.yaml` + `models.yaml` +
+`evals/labeled_v*.jsonl` + `src/embedding/**` + `src/llm/**` and fires
+`eval_regression_job` (one `RunRequest` per affected retrieval config) on a
+30-second debounce. The Dagster webserver runs on `http://localhost:13002`,
+with the lineage graph, asset materialization history, and the sensor tick
+log. The full dev-loop walkthrough and the Temporal Helm-chart prod-migration
+path are in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+**MLflow owns experiment tracking.** Every eval run logs a complete MLflow
+run (Phase 2.4) with 9 params + 6 metrics + 4 artifacts (prompt template as
+`mlflow.log_text`, leaderboard CSV, per-record CSV, calibration PNG). The
+MLflow UI on `http://localhost:15000` shows the experiment list, the runs with
+params+metrics, and the compare view across runs.
+
+**Langfuse owns LLM observability.** Every LLM call is wrapped in a Langfuse
+v2 trace (Phase 2.3) with embedding latency, ANN latency, top-K IDs, model
+version, prompt template version, and token cost as metadata. The Langfuse UI
+on `http://localhost:13000` shows the per-call trace tree with the structured
+Pydantic output and any retry attempts.
+
+**The boundary is deliberate.** Temporal = per-idea, retry-heavy, stateful.
+Dagster = batch, scheduled, sensor-driven, asset-lineage. MLflow = params &
+metrics. Langfuse = LLM trace tree. Each layer proves its abstraction before
+the next earns its keep. **For the full Temporal + Dagster boundary rationale
+(why both, not "merge them to save time"), the Python walkthrough, the asset
+lineage, and the production migration path, read
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).**
 
 ---
 
@@ -74,10 +200,16 @@ and the targets are INFORMATIONAL until the hand-label pass lands.
 git clone <repo-url> priorart && cd priorart
 uv sync
 
-# 2. Start Postgres + pgvector
+# 2. Start the stack
 docker compose up -d
+# - postgres (pgvector) on 15432
+# - api on 18000  (gated behind the `app` profile; usually run via uvicorn below)
+# - mlflow on 15000
+# - langfuse on 13000/13001
+# (Phase 2+) temporal on 7233/8233  (CLI: `temporal server start-dev`)
+# (Phase 3+) dagster on 13002  (CLI: `dagster dev`)
 
-# 3. Ingest the YC snapshot + embed (one-time, ~5 min)
+# 3. Ingest the YC + PH + HN snapshots + embed (one-time, ~5 min)
 make scrape
 make ingest
 
@@ -92,71 +224,36 @@ make eval
 ```
 
 Then open `http://localhost:15174` (frontend) or hit
-`http://localhost:18001/healthz` (API).
+`http://localhost:18001/healthz` (API). The full eval-leaderboard CSV lands at
+`results/leaderboard.csv` after `make eval`. The screenshots at the top of
+this README are rendered from that CSV (and from the per-config calibration
+PNGs and the per-category breakdown CSV) by the scripts in
+[`scripts/`](scripts/) — the numbers in the images match the files on disk to
+the digit.
 
-The full eval-leaderboard CSV lands at `results/leaderboard.csv` after
-`make eval`. The screenshot above is rendered from that CSV by
-`scripts/render_leaderboard_screenshot.py` — the numbers in the image
-match the CSV to the digit.
-
----
-
-## Architecture (one screen)
-
-![PriorArt system architecture — Temporal workflow, Dagster (Phase 3, dashed), Langfuse, MLflow, pgvector](docs/assets/architecture.png)
-
-**Phase 2 layers** Temporal (per-idea workflow), Langfuse (LLM
-observability), and MLflow (experiment tracking) on top of the
-existing FastAPI + pgvector core. **Phase 3** layers Dagster
-(dashed amber boundary in the diagram) for batch data platform —
-scheduled nightly re-embedding and the `config_change` sensor that
-fires the eval regression. The boundary between Phase 1 (retrieval),
-Phase 2 (workflow + observability), and Phase 3 (data platform) is
-deliberate: each phase proves its abstraction before the next layer
-earns its keep.
-
-### Temporal workflow walkthrough (brief)
-
-The `IdeaAnalysisWorkflow` (Phase 2.1) sequences six activities with
-explicit retry policies and a low-confidence signal channel:
-
-1. **`embed_idea`** — `BAAI/bge-m3` (1024-dim). Retry: 3 attempts, exp backoff.
-2. **`ann_search`** — pgvector HNSW over `company_embeddings`. Top-K=20.
-3. **Confidence band check** — if top-1 cosine < 0.55, the workflow
-   parks waiting on the `review` signal (low-confidence human review).
-4. **`llm_compare_topk`** — Claude Sonnet 4.5 via `instructor` +
-   Pydantic v2. Retry: 3 attempts, **non-retryable** on schema violation.
-5. **Web fallback** (Phase 2.2) — if top-1 cosine < 0.40, SearXNG →
-   Firecrawl → re-embed the top-3 scrape results → re-run ANN.
-6. **`market_scope_signal`** + **`assemble_verdict`** — cheap local
-   call (Qwen 2.5 32B or MiniMax-M3) + pure-function assembly into
-   the Pydantic `IdeaVerdict`.
-
-Every LLM call is wrapped in a Langfuse trace (Phase 2.3) with
-embedding latency, ANN latency, top-K IDs, model version, prompt
-template version, and token cost as metadata. Every eval run logs a
-complete MLflow run (Phase 2.4) with 9 params + 6 metrics + 4
-artifacts (prompt template as `mlflow.log_text`).
-
-**For the full Temporal + Dagster boundary rationale, the Python
-walkthrough, the asset lineage, and the production migration path,
-read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md).**
-
-### Phase 2 observability assets
-
-| Layer | URL | What it shows |
-|---|---|---|
-| **Temporal UI** | `http://localhost:8233` | Per-idea workflow runs, activity history, retry events, signal channels |
-| **Langfuse UI** | `http://localhost:13000` | LLM traces with full metadata (Phase 2.3 ships the wrapper; **literal UI screenshot pending live `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`** — see OPERATIONS.md § Failure modes) |
-| **MLflow UI** | `http://localhost:15000` | Experiment list, runs with params+metrics, compare view (Phase 2.4 ships the wrapper + 3 FINISHED runs in `phase-2-baseline`; **literal compare-view screenshot pending an operator with a display / headless browser**) |
+For the full daily loop (Temporal dev server, Dagster dev server, the eval
+harness, the API hot-reload, the failure-mode table), see
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ---
 
-## The competitive landscape
+## Methodology
 
-Three categories of existing tools, each missing something PriorArt has.
-Full table in [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md).
+Metric definitions, the labeled benchmark construction, the label policy
+(`labeler=ai-assisted-claude-minimax-m3`,
+`provenance=llm-generated-v2-pending-anurag-hand-review`), and the per-bucket
+limitations live in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). The
+evaluation harness itself is deep-dived in [`docs/EVAL.md`](docs/EVAL.md) —
+the schema of `results/eval.duckdb`, the queries that derive the leaderboard,
+and the per-record CSV at `results/per_record.<config>.<benchmark>.csv` that
+holds the ground-truth-vs-prediction rows for every record in the benchmark.
+
+---
+
+## Landscape
+
+Three categories of existing tools, each missing something PriorArt has. Full
+table in [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md).
 
 | Category | Examples | What they do | What they don't |
 |---|---|---|---|
@@ -165,51 +262,20 @@ Full table in [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md).
 | Internal accelerator tooling | YC, a16z, Antler, Techstars | The real production version. | Locked behind NDAs. |
 | Generic LLM eval libraries | DeepEval, RAGAS, TruLens | Industry-standard metrics. | Generic — no domain benchmark. |
 
-**The gap:** no public tool does **idea → vector dedup against a
-labeled public corpus → structured LLM comparison → market-scope
-signal → reproducible eval harness**, end-to-end.
-
----
-
-## Eval leaderboard (Phase 2)
-
-![PriorArt eval leaderboard v2 — 3 retrieval configs on labeled_v300.jsonl](docs/assets/leaderboard-v2.png)
-
-The leaderboard image above is rendered **directly from
-[`results/leaderboard.csv`](results/leaderboard.csv)** by
-[`scripts/render_leaderboard_v2_screenshot.py`](scripts/render_leaderboard_v2_screenshot.py).
-The numbers in the image match the CSV to the digit. One row per
-config — the `selected_threshold` (MRR-max per config; the runner
-falls back when no threshold meets the FPR ≤ 0.15 cap).
-
-To regenerate after `make eval`:
-
-```bash
-make screenshot-v2    # writes docs/assets/leaderboard-v2.png
-```
-
-The full per-threshold sweep lives at
-[`results/leaderboard.md`](results/leaderboard.md) (one section per
-config with the threshold-sweep table). The `eval.duckdb` file is the
-single-file DuckDB queryable view of every run — see
-[`docs/EVAL.md`](docs/EVAL.md) for the schema and the queries that
-derive the leaderboard.
-
-**Honest read on the numbers:** the v300 leaderboard shows dense
-(MRR=0.567) beating hybrid_rrf (0.458) and bm25 (0.392). The
-**FPR-on-novel cap of 0.15 is not cleared by any config** — see
-**Limitations** below for why and what closes the gap.
+**The gap:** no public tool does **idea → vector dedup against a labeled
+public corpus → structured LLM comparison → market-scope signal →
+reproducible eval harness**, end-to-end.
 
 ---
 
 ## How to add a retrieval config
 
-The eval runner is config-driven. Adding a new retrieval config
-(BM25, hybrid RRF, Cohere rerank, etc.) is three steps:
+The eval runner is config-driven. Adding a new retrieval config (BM25, hybrid
+RRF, Cohere rerank, etc.) is three steps:
 
 1. **Write the config YAML.** Drop a sibling of
-   [`configs/dense_bge_m3.yaml`](configs/dense_bge_m3.yaml) into
-   `configs/`. The schema is documented at the top of that file.
+   [`configs/dense_bge_m3.yaml`](configs/dense_bge_m3.yaml) into `configs/`.
+   The schema is documented at the top of that file.
 
    ```yaml
    # configs/bm25.yaml
@@ -219,101 +285,129 @@ The eval runner is config-driven. Adding a new retrieval config
    notes: Sparse BM25 retrieval, no embeddings.
    ```
 
-2. **Wire the API to honor the new config.** Add a `ConfigName` enum
-   (or whatever your router uses) and branch on it in
-   `POST /search`. Phase 1 ships the dense-bge-m3 path; Phase 2 adds
-   `bm25`, `hybrid_rrf`, `cohere_rerank` as siblings.
+2. **Wire the API to honor the new config.** Add a `ConfigName` enum (or
+   whatever your router uses) and branch on it in `POST /search`. Phase 1
+   ships the dense-bge-m3 path; Phase 2 adds `bm25`, `hybrid_rrf`,
+   `cohere_rerank` as siblings.
 
 3. **Re-run the eval.** `python -m eval.run --config configs/bm25.yaml`
    appends a new row to `results/leaderboard.csv`. Compare against the
-   dense-bge-m3 row in `docs/METHODOLOGY.md`.
+   dense-bge-m3 row in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
 
-The eval runner overwrites the DuckDB on each run (latest view) but
-appends to the CSV (history). This is the regression suite — when
-Phase 3 lands the GitHub Actions check, MRR dropping below 0.5 on
-`main` fails the build.
+The eval runner overwrites the DuckDB on each run (latest view) but appends
+to the CSV (history). This is the regression suite — when the 3.6 GitHub
+Actions check lands, MRR dropping below 0.7 on `hybrid_rrf` (or FPR-on-novel
+exceeding 0.15) on a PR that touches `configs/**`, `evals/**`,
+`src/embedding/**`, `src/llm/**`, or `models.yaml` will fail the build.
+
+---
+
+## How to add a data source
+
+The corpus merge is a Dagster asset (`hn_show_posts`, `product_hunt_archive`,
+`yc_directory`). To add a fourth source (e.g. Crunchbase public listings,
+Indie Hackers, a partner's API):
+
+1. **Write the scraper as a Dagster asset.** Sibling of the existing three
+   in [`src/dagster_assets/assets.py`](src/dagster_assets/assets.py). The
+   asset must yield a `pandas.DataFrame` with the same schema as
+   `companies.name`, `companies.description`, `companies.url`, plus a
+   `source` enum value that's unique to your new source.
+
+2. **Register the source enum.** Add the new source to the `Source` enum in
+   [`src/data/models.py`](src/data/models.py). The schema has a UNIQUE
+   constraint on `(source, external_id)`, so dedup against existing rows is
+   automatic on ingest.
+
+3. **Wire the @daily schedule (optional).** If the source should be
+   refreshed nightly, add an `AssetExecutionContext` to the
+   `nightly_re_embedding` schedule in
+   [`src/dagster_assets/definitions.py`](src/dagster_assets/definitions.py).
+   The `company_embeddings` asset picks up the new rows on the next
+   materialization.
+
+4. **Re-run the eval.** The leaderboard reports `corpus_count` per row, so
+   the new source's contribution is visible in the diff.
+
+The /healthz endpoint reports per-source counts
+(`yc=5949`, `producthunt=4000`, `hn=993` today), so the new source's footprint
+is observable in the API itself.
 
 ---
 
 ## Limitations
 
-Be honest about what this is and what it isn't.
+Be honest about what this is and what it isn't. Six items, in order of how
+much they shape what to take away from the leaderboard.
 
-- **Eval set v2 is LLM-generated, not hand-labeled. MRR targets in
-  PHASE-2.md §Definition-of-done are INFORMATIONAL until the
-  hand-label pass lands.** Per the Phase 1.5a fix (commit c8aa1fb)
-  and Phase 2.8 (card `t_36650c8c`), `evals/labeled_v300.jsonl` was
-  generated by `claude-minimax-m3` with explicit provenance
-  (`labeler=ai-assisted-claude-minimax-m3`,
-  `provenance=llm-generated-v2-pending-anurag-hand-review`) recorded
-  on every record. The Phase 1 100-record hand-labeled subset is
-  the gold-standard floor; the v2 expansion is the operational
-  benchmark until the hand-label pass on the 200 new triples
-  completes. **Don't quote MRR numbers from this leaderboard as if
-  they were on a hand-labeled set.** Phase 3 (or Anurag's hand-label
-  pass) closes this gap.
-- **Public corpus only.** Internal accelerator tooling sees the real
-  production version of this problem. PriorArt sees the public slice.
-- **10,983-company merged corpus** (YC + Product Hunt + HN). Per-source
-  counts in `/healthz`: `yc=5949`, `producthunt=4000`, `hn=993`. PH
-  and HN sources are Phase 2.5+2.6+2.7 work; the merge dedups on name
-  cosine ≥ 0.85 with a borderline review queue at 0.75–0.85.
-- **FPR-on-novel cap not met on any config.** No cosine threshold on
-  `[0.50, 0.80]` clears the 0.15 cap. On `labeled_v300.jsonl`:
-  dense_bge_m3 (best at threshold 0.8) gives MRR=0.567 with
-  FPR=0.79; hybrid_rrf gives MRR=0.458 with FPR=0.63; bm25 gives
-  MRR=0.392 with FPR=1.00. The Phase 3 calibration curve +
-  per-category FPR breakdown is the path to understanding *where*
-  each config fails (not just *that* it fails).
-- **None of the 3 configs clears the PHASE-2.md MRR ≥ 0.6 / dense ≥ 0.75
-  target.** Even setting aside the LLM-generated eval set caveat
-  above, the dense config drops from 0.559 on labeled_v100 to 0.567
-  on labeled_v300 — and never gets close to 0.75. Hybrid RRF
-  (MRR=0.458) underperforms dense on this benchmark despite the
-  cross-list coverage boost; a per-query failure analysis is the
-  Phase 3 lever (the eval set is needed hand-labeled first before
-  failure-mode classification is trustworthy). The right Phase 3
-  work is the per-source FPR breakdown + calibration curve, not
-  adding more configs.
-- **No LLM-comparison eval yet.** The structured LLM call in
-  `/ideas/analyze` exists and is Langfuse-traced (Phase 2.3) but
-  isn't scored against ground-truth verdicts. Phase 3 ships the
-  LLM-as-judge harness (deferred from Phase 2.10 by scope discipline).
-- **Literal Langfuse + MLflow UI screenshots are deferred.** The
-  wrappers are fully wired (Phase 2.3 + 2.4) and unit-tested, but
-  producing a literal screenshot of the Langfuse UI requires
-  `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` + `ANTHROPIC_API_KEY`
-  in `.env` to fire a real trace; the MLflow compare-view screenshot
-  requires a headless browser to navigate `localhost:15000`. Both
-  are operator tasks, not code work — see
-  [`docs/OPERATIONS.md` § Common failure modes](docs/OPERATIONS.md#common-failure-modes).
-- **Demo, not SaaS.** Single-tenant, self-hosted, public-data only.
+1. **Market-scope is a stub.** The structured `market_scope_signal` (wide-
+   open / crowded-but-growing / saturated / niche-but-real) exists in the
+   Pydantic `IdeaVerdict` schema and is emitted by the `market_scope_signal`
+   Temporal activity, but it is **not** benchmarked against ground-truth
+   verdicts and is labeled as *directional* in the API response. The
+   market-scope question is parked as a separate triage card
+   (`t_2f56bfa4`, status `needs_user_input`) — the stub stays until the scope
+   is decided.
+
+2. **Eval set is LLM-generated v2 (hand-label pending).** The 300-idea
+   benchmark at `evals/labeled_v300.jsonl` was generated by
+   `claude-minimax-m3` with explicit provenance
+   (`labeler=ai-assisted-claude-minimax-m3`,
+   `provenance=llm-generated-v2-pending-anurag-hand-review`) recorded on
+   every record. The 100-record hand-labeled subset
+   (`evals/labeled_v100.jsonl`) is the gold-standard floor; the v2 expansion
+   is the operational benchmark until the hand-label pass on the 200 new
+   triples completes. **Don't quote MRR / nDCG@K / ECE / FPR numbers from
+   this leaderboard as if they were on a hand-labeled set.** See
+   [`evals/labeled_v300.README.md`](evals/labeled_v300.README.md) for the
+   provenance policy and the per-record schema. The 100-record hand-labeled
+   floor is at [`evals/labeled_v100.README.md`](evals/labeled_v100.README.md).
+
+3. **MRR targets are informational until the hand-label pass lands.** The
+   PHASE-2.md / PHASE-3.md "MRR ≥ 0.6 on all 3 configs, dense ≥ 0.75" and
+   "MRR ≥ 0.7 on `hybrid_rrf`" targets are **informationally** the goals —
+   they are not enforced as regression gates yet, because the underlying
+   labels are LLM-generated. The 3.6 GitHub Actions regression will use the
+   0.7 / 0.15 floor as a typed constant, but the gate flips from
+   "informational" to "enforced" only when the hand-label pass lands. On the
+   current v300 set: dense=0.567, hybrid_rrf=0.458, bm25=0.392 — none
+   currently clears the dense ≥ 0.75 target; only hybrid_rrf is the closest
+   to the 0.7 floor.
+
+4. **FPR-on-novel cap not cleared by any config.** No cosine threshold on
+   `[0.50, 0.80]` clears the 0.15 cap on the current v300 set. The
+   per-bin breakdowns (per the 3.5 deliverable) show that nearly all the
+   false-positive novel records live in the `[0.8, 1.0)` cosine bin — the
+   "is the embedding model honest about novelty" lever, not the threshold
+   lever. This is the gap Phase 4 (reranker) closes.
+
+5. **Calibration ECE for `dense_bge_m3` is 0.527 — well above the 0.10
+   target.** The PHASE-3.md §3.3 target was ECE ≤ 0.10. The actual numbers
+   on `labeled_v300.jsonl` (LLM-generated v2, hand-label pending): dense =
+   0.527, hybrid_rrf = 0.506, bm25 = 0.603. **All three are above the
+   target.** This is recorded verbatim per the spec's "informational" stance
+   — the target is the right ambition, but the eval set is LLM-generated v2
+   and the calibration story is *not* "we have a calibrated system yet."
+   The per-config calibration PNGs at
+   [`docs/assets/calibration-dense_bge_m3.png`](docs/assets/calibration-dense_bge_m3.png),
+   [`docs/assets/calibration-hybrid_rrf.png`](docs/assets/calibration-hybrid_rrf.png),
+   [`docs/assets/calibration-bm25.png`](docs/assets/calibration-bm25.png)
+   carry the "ECE > 0.10, recorded verbatim" line via the title.
+
+6. **Per-category failure breakdown is LLM-categorized v1.** The
+   `business_category` field on every record in
+   [`evals/labeled_v300.jsonl`](evals/labeled_v300.jsonl) was assigned by a
+   deterministic rule-based v1 classifier (no LLM, no API key) and stamped
+   `deterministic-rule-based-v1-pending-anurag-hand-review`. 172/300 records
+   land in `other` (the rule set doesn't catch LLM-generated idea
+   descriptions that don't carry explicit category keywords). The per-
+   category picture will be more nuanced after the hand-label pass.
+   See [`docs/assets/failure-breakdown-dense_bge_m3.md`](docs/assets/failure-breakdown-dense_bge_m3.md)
+   for the per-(config, category) honest read; the consolidated heatmap is
+   at [`docs/assets/failure-breakdown.png`](docs/assets/failure-breakdown.png).
 
 The full limitations list lives in
 [`docs/METHODOLOGY.md` § Limitations](docs/METHODOLOGY.md#limitations).
-
----
-
-## The phase plan
-
-|| Phase | Weekend | Goal | Tier |
-||---|---|---|---|
-|| **Phase 1** ✓ | 1 | Working idea-lookup API + UI + 100-idea labeled benchmark + 5 metrics, shipped by Sunday night. | Must-be |
-|| **Phase 2** ✓ (pending 2.12 review) | 2 | Temporal workflow + Langfuse + MLflow + 3 retrieval configs (dense / BM25 / hybrid RRF) + corpus expansion to 10,983 + eval set expansion to 300. | Should-be |
-|| **Phase 3** | 3 | Dagster + calibration curve + FPR-on-novel breakdown + GitHub Actions regression + LLM-comparison eval + Dagster-managed config_change sensor + hand-label pass on v300. | Can-be |
-
-Hard rule: Phase 1 must be done before Phase 2 starts. Phase 2 must
-be done before Phase 3 starts. Each phase doc in
-[`docs/PHASE-*.md`](docs/) is the detailed task breakdown.
-
-**Honest progress on the CV line:** the words *"multi-step Temporal
-workflows with web-search fallback"*, *"Dagster-managed corpus
-ingestion"*, *"Langfuse observability"*, and *"reproducible MLflow-
-tracked evaluation harness (MRR / nDCG@K / calibration)"* all need
-to be defensible to ship this project. Phase 2 covers the first
-three fully (Temporal + Langfuse + MLflow all shipped). Dagster is
-Phase 3. The calibration curve is Phase 3. Until those land, the
-CV claim is one phase short.
 
 ---
 
