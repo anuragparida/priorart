@@ -1,12 +1,57 @@
-// Wire types matching src/llm/schemas.py (Phase 1.7) + src/api/analyze.py (Phase 1.8).
-// Keep these in sync with the backend Pydantic models — they are the
-// public contract that the frontend renders.
+// Wire types matching src/llm/schemas.py (Phase 1.7 + Phase 4.1) +
+// src/api/analyze.py (Phase 1.8). Keep these in sync with the
+// backend Pydantic models — they are the public contract that the
+// frontend renders.
 
 export type MarketScope =
   | 'wide_open'
   | 'crowded_but_growing'
   | 'saturated'
   | 'niche_but_real';
+
+// Phase 4.1 — confidence tier for the market-scope signal envelope.
+// Mirrors MarketScopeConfidence in src/llm/schemas.py. The frontend
+// renders a small badge next to the direction chip; the badge falls
+// back to 'directional' when `market_scope_signal` is null (the
+// Phase 1.7/1.8/1.11/2.1/2.2/2.3/2.8/3.1/3.3 verdict shape).
+export type MarketScopeConfidence =
+  | 'directional'
+  | 'evidence_backed'
+  | 'quantitative';
+
+// Phase 4.1 — one evidence entry. The LLM synthesis step in 4.4
+// cites evidence but never invents it; `corpus` carries a company_id,
+// `web` carries a url. as_of is the ISO-8601 capture timestamp.
+export interface MarketScopeEvidence {
+  source: 'corpus' | 'web';
+  url?: string | null;
+  company_id?: number | null;
+  snippet?: string | null;
+  as_of: string;
+}
+
+// Phase 4.1 — quantitative layer populated by the 4.2/4.3
+// deterministic rules. Null when confidence is 'directional';
+// partially populated (search_volume_proxy set) when 'evidence_backed'.
+export interface MarketScopeQuant {
+  competitor_count: number;
+  recent_3y_count: number;
+  category_distribution: Record<string, number>;
+  search_volume_proxy?: number | null;
+  saturation_index: number; // [0, 1]
+  growth_rate?: number | null;
+}
+
+// Phase 4.1 — the corpus-grounded envelope. Optional on the
+// verdict; null when the 4.2 deterministic rules don't fire and
+// the pipeline falls back to the Phase 1.7 stub shape.
+export interface MarketScopeSignal {
+  direction: MarketScope;
+  rationale: string;
+  quantitative?: MarketScopeQuant | null;
+  confidence: MarketScopeConfidence;
+  evidence: MarketScopeEvidence[];
+}
 
 export interface CompetitorVerdict {
   company_id: number;
@@ -23,6 +68,11 @@ export interface IdeaVerdict {
   top_competitors: CompetitorVerdict[];
   market_scope: MarketScope;
   market_scope_rationale: string;
+  // Phase 4.1 — additive. The legacy `market_scope` + `market_scope_rationale`
+  // fields are unchanged for backward compat; the badge in 4.6 reads
+  // `market_scope_signal.confidence` when present and falls back to
+  // 'directional' when null.
+  market_scope_signal?: MarketScopeSignal | null;
   supporting_evidence: string[];
 }
 
