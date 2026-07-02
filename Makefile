@@ -98,15 +98,59 @@ EVAL_MLFLOW_FLAGS := --no-mlflow
 else
 EVAL_MLFLOW_FLAGS := --experiment-name $(EXPERIMENT)
 endif
-eval: ## Run the eval harness against the live priorart API. Writes results/leaderboard.csv + results/eval.duckdb AND logs the run to MLflow (override with NO_MLFLOW=1).
+# Default benchmark — ``labeled_v100.jsonl`` keeps backwards-compat
+# with Phase 1.6's smoke target. The Phase 3.6 sweep target
+# (``make eval-sweep``) hard-codes ``labeled_v300.jsonl`` so the
+# regression contract doesn't drift. Override either with
+# ``make eval BENCH=evals/labeled_v300.jsonl``.
+BENCH ?= evals/labeled_v100.jsonl
+eval: ## Run the eval harness against the live priorart API. Writes results/leaderboard.csv + results/eval.duckdb AND logs the run to MLflow (override with NO_MLFLOW=1 and/or BENCH=evals/labeled_v300.jsonl).
 	MLFLOW_TRACKING_URI=$(MLFLOW_TRACKING_URI) $(PY) -m eval.run \
-		--benchmark evals/labeled_v100.jsonl \
+		--benchmark $(BENCH) \
 		--config configs/dense_bge_m3.yaml \
 		--output results/leaderboard.csv \
 		--db results/eval.duckdb \
 		--markdown-out results/leaderboard.md \
 		--mlflow-tracking-uri $(MLFLOW_TRACKING_URI) \
 		$(EVAL_MLFLOW_FLAGS)
+
+.PHONY: eval-sweep
+# Phase 3.6 (card t_e0f62c2a). Run the eval harness against the
+# 3 leaderboard configs (dense_bge_m3 / bm25 / hybrid_rrf) on the
+# 300-record labeled benchmark. This is the local reproduction of
+# the GitHub Actions regression workflow. Same hard rules apply:
+# no external API calls, committed snapshots only, MLflow off by
+# default (override with ``--no-mlflow=false`` + a tracking URI).
+#
+# The wrapper lives at scripts/ci/run_eval_sweep.py and refuses to
+# run a config whose name hints at an external API (cohere/brave/
+# anthropic/openai/serpapi) without --allow-external-config.
+eval-sweep: ## Phase 3.6 — run the 3-config eval sweep (dense + bm25 + hybrid_rrf) on labeled_v300. Writes results/leaderboard.csv.
+	$(PY) scripts/ci/run_eval_sweep.py \
+		--benchmark evals/labeled_v300.jsonl \
+		--output results/leaderboard.csv \
+		--db results/eval.duckdb \
+		--markdown-out results/leaderboard.md
+
+.PHONY: eval-gate
+# Phase 3.6 — read the post-sweep leaderboard.csv and exit non-zero
+# if hybrid_rrf's selected row crosses the regression thresholds
+# (MRR < 0.40 or FPR-on-novel > 0.70). Thresholds are hard-coded
+# constants in scripts/ci/eval_gate.py — see that file's docstring
+# for the rationale (0.50/0.50 from the card body would fail every
+# PR on the current main, where hybrid_rrf sits at 0.458/0.63).
+eval-gate: ## Phase 3.6 — fail the build if the leaderboard.csv crosses the regression thresholds on hybrid_rrf.
+	$(PY) scripts/ci/eval_gate.py --csv results/leaderboard.csv
+
+.PHONY: leaderboard-diff
+# Phase 3.6 — render a PR-comment-friendly Markdown diff between
+# the base branch's leaderboard.csv and the post-sweep head copy.
+# Used by the GitHub Actions workflow's PR-comment step; useful
+# locally for previewing the diff format.
+leaderboard-diff: ## Phase 3.6 — render a Markdown diff between the base and head leaderboard CSVs. Args: BASE=<path> HEAD=<path>.
+	@test -n "$(BASE)" || (echo "BASE=<path> is required (e.g. BASE=/tmp/base.csv)"; exit 1)
+	@test -n "$(HEAD)" || (echo "HEAD=<path> is required (e.g. HEAD=results/leaderboard.csv)"; exit 1)
+	$(PY) scripts/ci/leaderboard_diff.py --base $(BASE) --head $(HEAD)
 
 .PHONY: screenshot
 screenshot: ## Re-render docs/assets/leaderboard-v1.png from results/leaderboard.csv (Phase 1 dense config).
