@@ -82,11 +82,15 @@ One JSON object per line. See `src/eval/benchmark.py::BenchmarkRecord` for the t
   "labeler": "ai-assisted-claude-minimax-m3",
   "labeled_at": "2026-06-30T20:30:00Z",
   "notes": "LLM-generated, pending Anurag hand-review. Phase 1 anchor — original: Hand-written paraphrase of Draftwise (YC id=1660)",
-  "provenance": "llm-generated-v2-pending-anurag-hand-review"
+  "provenance": "llm-generated-v2-pending-anurag-hand-review",
+  "business_category": "b2b_saas",
+  "business_category_provenance": "deterministic-rule-based-v1-pending-anurag-hand-review"
 }
 ```
 
 `source` is one of `yc` / `producthunt` / `hn` (real corpus) or `synthetic` (hand- or LLM-authored). `notes` is free-form and is the place to capture labeler reasoning and the v2 disclaimer.
+
+The `business_category` field is added by Phase 3.4 (commit to be added); it is **orthogonal** to the existing `category` (which holds the eval-set taxonomy `duplicate` / `novel` / `adversarial_*`). The `business_category` is one of the 8 PHASE-3.md §3.4 buckets: `b2b_saas`, `consumer`, `devtools`, `marketplace`, `fintech`, `healthcare`, `education`, `other`. The `business_category_provenance` field carries the same honest-provenance discipline as the eval set's own `provenance` field — see the Phase 3.4 handoff for why the categories are rule-based v1 (deterministic, offline, no API key required) and the hand-label pass is a follow-up.
 
 ## Re-running / re-labeling
 
@@ -110,5 +114,6 @@ The numbers (MRR, nDCG@K, P@5, R@10, FPR-on-novel) are **informational** until t
 
 ## Change log
 
+- **2026-07-02** — Phase 3.4: added `business_category` (one of 8 PHASE-3.md §3.4 buckets: `b2b_saas` / `consumer` / `devtools` / `marketplace` / `fintech` / `healthcare` / `education` / `other`) and `business_category_provenance` (default: `deterministic-rule-based-v1-pending-anurag-hand-review`) to every record. Categories assigned by `src/eval/categorize.py::assign_business_category` — a pure deterministic rule-based assigner (no LLM, no API key). Same honest-provenance discipline as the eval set's own `provenance` field. Card: `t_3ac2d05d`.
 - **2026-06-30** — Phase 2.8 v2: 300 records (100 dup + 100 novel + 100 adv). 200 new LLM-authored records with honest provenance (`labeler="ai-assisted-claude-minimax-m3"`, `provenance="llm-generated-v2-pending-anurag-hand-review"`, `notes` prefix on every record). 100 Phase 1 hand-labels re-stamped with the same v2 provenance policy. Source breakdown: yc=40, producthunt=30, hn=30, synthetic=200. Card: `t_36650c8c`.
 - **2026-06-28** — Initial 100 records authored (`evals/labeled_v100.jsonl`). 20 confirmed anchors × 2 paraphrases + 30 novel + 30 adversarial. Labels committed by Anurag.
