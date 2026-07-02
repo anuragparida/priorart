@@ -58,3 +58,9 @@ models-cache/
 node_modules/
 src/frontend/node_modules/
 src/frontend/dist/
+
+# Eval runner artifacts that are NOT committed (3.8 — the literal string
+# "none" gets misinterpreted as a relative path by duckdb's CLI when passed
+# via --db none; writing a path named "none" to the repo root is a smell).
+/none
+/docs/assets/demo.cast.tmp
