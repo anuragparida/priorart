@@ -40,6 +40,45 @@ corpus:
     count: 1000
     source_url: https://hn.algolia.com/api/v1/search
 
+# Release snapshot — Phase 3.10 (card t_6988ddfd).
+#
+# ``v0.1.0`` is the first tagged release. This block records which
+# per-source snapshots, retrieval configs, and benchmark version the
+# tag was cut on, so an operator reproducing the tag from scratch
+# has a single-file reference for "what's the right combo".
+#
+# The numbers below are the leaderboard values from the post-sweep
+# run on the fresh-clone smoke test (2026-07-02), against the
+# 300-record labeled_v300.jsonl benchmark (LLM-generated v2, hand
+# review pending). ECE is the 10-bin weighted calibration error
+# (Phase 3.3). FPR-on-novel is the per-config headline trust-this-
+# tool metric (Phase 3.5).
+release:
+  tag: v0.1.0
+  release_date: "2026-07-02"
+  benchmark: evals/labeled_v300.jsonl
+  benchmark_provenance: llm-generated-v2-pending-anurag-hand-review
+  configs:
+    dense_bge_m3:
+      mrr: 0.567
+      fpr_on_novel: 0.79
+      ece: 0.527
+    bm25:
+      mrr: 0.392
+      fpr_on_novel: 1.00
+      ece: 0.603
+    hybrid_rrf:
+      mrr: 0.458
+      fpr_on_novel: 0.63
+      ece: 0.506
+  corpus_count: 10983
+  regression_floor:
+    mrr_min: 0.40          # eval_gate.py — hybrid_rrf gate (Phase 3.6)
+    fpr_on_novel_max: 0.70  # eval_gate.py — hybrid_rrf gate (Phase 3.6)
+  notes:
+    - "The 0.50 MRR / 0.15 FPR-on-novel aspirational caps from PHASE-3.md §3.6 are NOT cleared by any config as of v0.1.0; the 0.40/0.70 floor is what eval_gate.py enforces. Phase 4 (reranker) is the lever."
+    - "FPR-on-novel is the trust-this-tool metric (Phase 3.5). Even at the best threshold, dense_bge_m3 fires a false-positive on a novel idea 79% of the time — do not ship to end-users yet."
+
 # The merged manifest — produced by ``make corpus-build``. Listed
 # here so operators can find it from this one file.
 manifest:

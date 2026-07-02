@@ -5,6 +5,8 @@
 > production ML/AI platform: pgvector + bge-m3 retrieval, Temporal workflows,
 > Dagster data platform, MLflow experiment tracking, Langfuse LLM observability.
 
+**v0.1.0** — Phase 3 ship (Dagster + calibration + GitHub Actions + asciinema demo). See the [v0.1.0 release notes](https://github.com/anuragparida/priorart/releases/tag/v0.1.0) for what's in this tag.
+
 ![PriorArt eval leaderboard v2 — 3 retrieval configs on labeled_v300.jsonl](docs/assets/leaderboard-v2.png)
 
 ![PriorArt system architecture — Temporal workflow, Dagster, Langfuse, MLflow, pgvector](docs/assets/architecture.png)
@@ -14,7 +16,8 @@
 ![PriorArt per-category failure breakdown — 8 business categories, 3 configs](docs/assets/failure-breakdown.png)
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-![CI](https://github.com/<owner>/priorart/actions/workflows/eval-regression.yml/badge.svg)
+![CI](https://github.com/anuragparida/priorart/actions/workflows/eval-regression.yml/badge.svg)
+[![v0.1.0](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/anuragparida/priorart/releases/tag/v0.1.0)
 ![Made with bge-m3 + pgvector + Temporal + Dagster](https://img.shields.io/badge/made%20with-bge--m3%20%2B%20pgvector%20%2B%20Temporal%20%2B%20Dagster-blueviolet)
 
 ---
