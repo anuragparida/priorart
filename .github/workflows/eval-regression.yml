@@ -132,11 +132,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-        volumes:
-          - pgdata:/var/lib/postgresql/data
-
-    volumes:
-      pgdata:
+        # NOTE (card t_be81a875): the `pgdata` job-level volume
+        # block was removed. GitHub Actions only allows a job-level
+        # `volumes:` key when the job has a `container:` block;
+        # since this job runs directly on `ubuntu-latest` (no job
+        # container), the volume mount was invalid and the
+        # workflow failed to parse with HTTP 422 on every push.
+        # The eval job is short-lived (corpus build + 3-config
+        # sweep + diff), so an ephemeral service-container
+        # filesystem is fine — Postgres only needs to survive long
+        # enough for the eval to run. The service container's
+        # own storage is wiped on job teardown.
 
     steps:
       - name: Checkout
@@ -309,12 +315,22 @@ jobs:
           # in scripts/ci/eval_gate.py — see that file's docstring
           # for the rationale (deviation from the card body's
           # 0.50/0.50, justified by the current 0.458/0.63 baseline).
+          set +e
           uv run python scripts/ci/eval_gate.py \
             --csv results/leaderboard.csv \
             | tee /tmp/eval_gate.md
+          gate_rc=$?
+          set -e
           echo "gate_path=/tmp/eval_gate.md" >> "$GITHUB_OUTPUT"
-          # If we got here the gate passed. The "fail the build"
-          # path is the next step's ${{ steps.gate.outcome }} check.
+          # The next step keys off steps.gate.conclusion, so we
+          # have to set the output explicitly (default value of
+          # $? inside a `run:` block is the last command's, and
+          # `tee` masks the real exit code without `set +e`).
+          if [ "$gate_rc" -eq 0 ]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Fail build on gate violation
         if: steps.gate.conclusion == 'failure'

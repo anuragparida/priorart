@@ -548,3 +548,181 @@ def test_makefile_eval_supports_bench_override() -> None:
     assert "BENCH)" in text or "$(BENCH)" in text, (
         "make eval doesn't actually use the BENCH= override"
     )
+
+
+# ---------------------------------------------------------------------------
+# Card t_be81a875 — workflow parse fix
+# ---------------------------------------------------------------------------
+#
+# GitHub Actions rejects a `volumes:` key at the job level unless the
+# job has a `container:` block. The eval-regression job runs directly
+# on `ubuntu-latest` with no job-level container, so the job-level
+# `volumes: pgdata:` block broke the workflow parse and every push
+# failed HTTP 422. The fix removes the job-level volumes block; the
+# service container's own ephemeral storage is enough for the
+# short-lived eval job.
+#
+# Secondary: the `id: gate` step needs to define a `conclusion` output
+# for the next step's `if: steps.gate.conclusion == 'failure'` to
+# resolve correctly. actionlint flagged this; without it the next
+# step's `if` is always true on a missing output and the build would
+# fail open.
+
+
+def test_workflow_has_no_job_level_volumes(workflow: dict) -> None:
+    """Regression test for card t_be81a875.
+
+    GitHub Actions only allows a job-level `volumes:` key when the
+    job has a `container:` block. The eval-regression job runs on
+    `ubuntu-latest` with no `container:` — so a job-level
+    `volumes:` is invalid and the workflow fails to parse
+    (HTTP 422: failed to parse workflow).
+
+    The valid shape is: each service container (e.g. `postgres`)
+    can have its own `volumes:` mount; the job itself cannot.
+    The fix removed the `pgdata` job-level volume.
+    """
+    job = workflow.get("jobs", {}).get("eval-regression", {})
+    # The full allowed key set for a job (per GitHub's schema).
+    allowed = {
+        "concurrency",
+        "container",
+        "continue-on-error",
+        "defaults",
+        "env",
+        "environment",
+        "if",
+        "name",
+        "needs",
+        "outputs",
+        "permissions",
+        "runs-on",
+        "secrets",
+        "services",
+        "snapshot",
+        "steps",
+        "strategy",
+        "timeout-minutes",
+        "uses",
+        "with",
+    }
+    actual = set(job.keys())
+    unexpected = actual - allowed
+    assert "volumes" not in actual, (
+        "Job has a job-level 'volumes:' block — GitHub Actions "
+        "rejects this unless the job has a 'container:' block "
+        "(card t_be81a875, actionlint error .github/workflows/"
+        "eval-regression.yml:138:5: unexpected key 'volumes' for "
+        "'job' section)."
+    )
+    assert not unexpected, (
+        f"Job has unexpected keys: {unexpected}. GitHub Actions "
+        f"will reject the workflow at parse time. Allowed keys: "
+        f"{sorted(allowed)}"
+    )
+
+
+def test_workflow_gate_step_defines_conclusion_output(workflow: dict) -> None:
+    """Regression test for card t_be81a875 (secondary issue).
+
+    The "Fail build on gate violation" step keys off
+    ``steps.gate.conclusion``. The ``id: gate`` step must
+    explicitly emit a ``conclusion`` output (success | failure)
+    for that `if:` to resolve. actionlint flagged this as
+    "property 'gate' is not defined in object type"; without
+    the explicit output the build would fail-open on a
+    missing output.
+    """
+    steps = workflow.get("jobs", {}).get("eval-regression", {}).get("steps", [])
+    gate_steps = [s for s in steps if s.get("id") == "gate"]
+    assert len(gate_steps) == 1, (
+        f"Expected exactly one 'id: gate' step, found {len(gate_steps)}. "
+        f"The next step's `if: steps.gate.conclusion` needs a unique target."
+    )
+    gate = gate_steps[0]
+    # The step's run: block must echo "conclusion=success" or
+    # "conclusion=failure" into $GITHUB_OUTPUT. We assert on
+    # the step's source so a future edit can't silently drop it.
+    run_block = gate.get("run", "")
+    assert "GITHUB_OUTPUT" in run_block, (
+        "The 'id: gate' step must write to $GITHUB_OUTPUT for the "
+        "'Fail build on gate violation' step's "
+        "`if: steps.gate.conclusion == 'failure'` to resolve."
+    )
+    assert "conclusion=" in run_block, (
+        "The 'id: gate' step must write a 'conclusion' output "
+        "(either 'conclusion=success' or 'conclusion=failure') to "
+        "$GITHUB_OUTPUT. The next step keys off "
+        "`steps.gate.conclusion` and would fail open without it."
+    )
+    # And the value domain is constrained to success/failure
+    # (actionlint's expected type for an outputs.conclusion).
+    assert "conclusion=success" in run_block and "conclusion=failure" in run_block, (
+        "The 'id: gate' step must write BOTH 'conclusion=success' "
+        "and 'conclusion=failure' outputs (the run: script picks "
+        "one based on the gate's exit code). Found neither or "
+        "only one of the two."
+    )
+    # Sanity-check: the step that consumes steps.gate.conclusion
+    # exists and has the expected `if:` guard.
+    fail_step = next(
+        (s for s in steps if s.get("name") == "Fail build on gate violation"),
+        None,
+    )
+    assert fail_step is not None, (
+        "'Fail build on gate violation' step is missing — the gate "
+        "output has no consumer."
+    )
+    assert "steps.gate.conclusion" in fail_step.get("if", ""), (
+        "'Fail build on gate violation' step doesn't reference "
+        "steps.gate.conclusion. The id: gate step's output isn't "
+        "wired to a consumer."
+    )
+
+
+def test_workflow_passes_actionlint() -> None:
+    """Compile-time guard for card t_be81a875.
+
+    The original failure mode (job-level `volumes:`) was caught
+    only by `actionlint` — pure YAML parsing in tests wouldn't
+    catch it because `volumes:` is a valid YAML key, just not
+    a valid GitHub Actions job key. The docker-rhysd actionlint
+    image is the source of truth for GitHub's schema.
+
+    This test runs actionlint via docker (same as the card's
+    verification recipe) and asserts exit 0. If docker isn't
+    available, the test skips with a clear message — the
+    workflow's syntax is still verified by the structural
+    tests above, just not the full GitHub Actions schema.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("docker"):
+        pytest.skip("docker not on PATH; cannot run actionlint")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-u",
+            "0",
+            "-v",
+            f"{REPO_ROOT}:/work",
+            "-w",
+            "/work",
+            "rhysd/actionlint:latest",
+            ".github/workflows/eval-regression.yml",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"actionlint failed (exit={result.returncode}).\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}\n\n"
+        f"Card t_be81a875 acceptance requires actionlint exit 0 — "
+        f"a non-zero exit means the workflow won't be accepted by "
+        f"GitHub Actions and every push will fail with HTTP 422."
+    )
